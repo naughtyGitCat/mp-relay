@@ -71,8 +71,12 @@ async def _stream_signature(path: Path) -> Optional[tuple]:
     parts are concat-copy compatible.
 
     Returns a tuple (vcodec, vprofile, w, h, acodec, aprofile, sample_rate,
-    channels) or None if probe failed.
+    channels) or None if probe failed. Uses JSON output to avoid ambiguity in
+    ffprobe's text-mode stream separators (which differ across versions and
+    output options).
     """
+    import json as _json
+
     ffp = qc._ffprobe_path()
     if not ffp:
         return None
@@ -82,7 +86,7 @@ async def _stream_signature(path: Path) -> Optional[tuple]:
             "-v", "error",
             "-show_entries",
             "stream=codec_type,codec_name,profile,width,height,sample_rate,channels",
-            "-of", "default=noprint_wrappers=1",
+            "-of", "json",
             str(path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -91,36 +95,27 @@ async def _stream_signature(path: Path) -> Optional[tuple]:
     except (asyncio.TimeoutError, FileNotFoundError, PermissionError):
         return None
 
-    text = stdout.decode("utf-8", errors="replace")
-    # ffprobe emits one block per stream, separated by blank lines.
-    blocks: list[dict[str, str]] = []
-    cur: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            if cur:
-                blocks.append(cur)
-                cur = {}
-            continue
-        if "=" in line:
-            k, _, v = line.partition("=")
-            cur[k.strip()] = v.strip()
-    if cur:
-        blocks.append(cur)
+    try:
+        data = _json.loads(stdout.decode("utf-8", errors="replace") or "{}")
+    except _json.JSONDecodeError:
+        return None
 
-    v = next((b for b in blocks if b.get("codec_type") == "video"), {})
-    a = next((b for b in blocks if b.get("codec_type") == "audio"), {})
+    streams = data.get("streams") or []
+    v = next((s for s in streams if s.get("codec_type") == "video"), {})
+    a = next((s for s in streams if s.get("codec_type") == "audio"), {})
     if not v:
         return None
+    # All values stringified — JSON sometimes emits int (width/height) and
+    # sometimes string (sample_rate); equality compare needs same type.
     return (
-        v.get("codec_name", ""),
-        v.get("profile", ""),
-        v.get("width", ""),
-        v.get("height", ""),
-        a.get("codec_name", ""),
-        a.get("profile", ""),
-        a.get("sample_rate", ""),
-        a.get("channels", ""),
+        str(v.get("codec_name", "")),
+        str(v.get("profile", "")),
+        str(v.get("width", "")),
+        str(v.get("height", "")),
+        str(a.get("codec_name", "")),
+        str(a.get("profile", "")),
+        str(a.get("sample_rate", "")),
+        str(a.get("channels", "")),
     )
 
 
