@@ -16,7 +16,7 @@ from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import discover, jav_search
+from . import discover, gfriends, jav_search
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -551,3 +551,20 @@ async def task_detail(task_id: str):
     if not t:
         raise HTTPException(404, "task not found")
     return t
+
+
+# ============================================================
+# Phase 2d: gfriends actor avatar fallback
+# ============================================================
+
+@app.get("/api/gfriends")
+async def api_gfriends(name: str = ""):
+    """Look up an actor's portrait URL on gfriends/gfriends.
+
+    Returns ``{name, url}`` on hit, ``{name, url: null}`` on miss. Used by
+    the discover UI as a fallback when JavBus actor cards have no photo.
+    """
+    if not name:
+        raise HTTPException(400, "name required")
+    url = await gfriends.find_actor_avatar_url(name)
+    return {"name": name, "url": url}

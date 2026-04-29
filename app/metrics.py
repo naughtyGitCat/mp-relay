@@ -140,6 +140,17 @@ MDCX_RUN: Counter = Counter(
 
 
 # ---------------------------------------------------------------------------
+# gfriends avatar fallback (Phase 2d)
+# ---------------------------------------------------------------------------
+
+GFRIENDS_LOOKUP: Counter = Counter(
+    "mp_relay_gfriends_lookup_total",
+    "gfriends actor avatar lookups",
+    ["result"],   # hit|miss|error
+)
+
+
+# ---------------------------------------------------------------------------
 # Inflight gauge — refreshed by watcher tick from store.list_recent()
 # ---------------------------------------------------------------------------
 
