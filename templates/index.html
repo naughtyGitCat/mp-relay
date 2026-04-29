@@ -187,12 +187,22 @@ async function doSubmit(force = false) {
     result.innerHTML = msg;
 
     if (data.candidates && data.candidates.length) {
-      const heading = data.kind === 'id_ref' ? '直接定位到的媒体:' : '媒体搜索结果 — 选一个订阅:';
-      candEl.innerHTML = '<h3 style="font-size:14px; margin:12px 0 8px;">' + heading + '</h3>' +
-        data.candidates.map(c => renderCandidate(c)).join('');
-      candEl.querySelectorAll('button[data-tmdbid]').forEach(b => {
-        b.addEventListener('click', () => doSubscribe(b.dataset));
-      });
+      // JAV candidates from Phase 1 (sukebei magnet search)
+      if (data.kind === 'jav_code') {
+        candEl.innerHTML = '<h3 style="font-size:14px; margin:12px 0 8px;">'
+          + '番号 <code>' + escape(data.code) + '</code> 找到 ' + data.candidates.length + ' 个种子:</h3>'
+          + data.candidates.map(c => renderJavCandidate(c)).join('');
+        candEl.querySelectorAll('button[data-magnet]').forEach(b => {
+          b.addEventListener('click', () => doJavAdd(b.dataset));
+        });
+      } else {
+        const heading = data.kind === 'id_ref' ? '直接定位到的媒体:' : '媒体搜索结果 — 选一个订阅:';
+        candEl.innerHTML = '<h3 style="font-size:14px; margin:12px 0 8px;">' + heading + '</h3>' +
+          data.candidates.map(c => renderCandidate(c)).join('');
+        candEl.querySelectorAll('button[data-tmdbid]').forEach(b => {
+          b.addEventListener('click', () => doSubscribe(b.dataset));
+        });
+      }
     } else if (data.hint) {
       // 0 candidates with helper hint (Phase 1.5 fallback)
       candEl.innerHTML = '<div style="margin-top:8px; padding:10px; background:rgba(112,112,112,0.12); border-radius:8px; font-size:13px; line-height:1.6;">' +
@@ -292,6 +302,42 @@ function renderCandidate(c) {
         ${tmdbid ? `<button data-name="${escape(title)}" data-tmdbid="${tmdbid}" data-type="${escape(type)}">订阅</button>` : ''}
       </div>
     </div>`;
+}
+
+function renderJavCandidate(c) {
+  const qLabel = c.quality_score >= 4 ? '4K' : c.quality_score >= 3 ? 'FHD' : c.quality_score >= 2 ? 'HD' : 'SD';
+  const subBadge = c.has_chinese_subs ? '<span style="background:#3fb950;color:white;padding:1px 5px;border-radius:3px;font-size:10px;margin-left:4px">中字</span>' : '';
+  return `
+    <div class="candidate" style="padding:8px 10px;">
+      <div class="meta">
+        <div class="title">${escape(c.title)}${subBadge}</div>
+        <div class="info">
+          <span style="color:var(--accent)">[${qLabel}]</span> ·
+          ${escape(c.size_str)} ·
+          ↓${c.seeders} ↑${c.leechers} ·
+          下载${c.downloads} ·
+          ${c.pub_date.slice(5, 16)}
+        </div>
+      </div>
+      <div class="actions">
+        <button data-magnet="${escape(c.magnet)}" data-code="${escape(c.info_hash)}">下载</button>
+      </div>
+    </div>`;
+}
+
+async function doJavAdd(d) {
+  const fd = new FormData();
+  fd.set('magnet', d.magnet);
+  if (d.code) fd.set('code', d.code);
+  result.className = '';
+  result.innerHTML = '加入 qBT…';
+  const r = await fetch('/api/jav-add', { method: 'POST', body: fd });
+  const j = await r.json();
+  result.className = r.ok ? 'ok' : 'err';
+  result.innerHTML = r.ok
+    ? '<strong>已加入 qBT JAV 队列</strong> task=<code>' + escape(j.task_id) + '</code> — watcher 会在下载完成后自动 mdcx 刮削'
+    : '<strong>失败</strong><pre>' + JSON.stringify(j, null, 2) + '</pre>';
+  candEl.innerHTML = '';
 }
 
 async function doSubscribe(d) {

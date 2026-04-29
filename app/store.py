@@ -56,6 +56,14 @@ def init() -> None:
                 films_json  TEXT NOT NULL
             )
         """)
+        # Phase 1: per-番号 sukebei search cache
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS jav_search_cache (
+                code            TEXT PRIMARY KEY,
+                fetched_at      REAL NOT NULL,
+                candidates_json TEXT NOT NULL
+            )
+        """)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +110,25 @@ def actor_films_cache_set(actor_id: str, films: list[dict]) -> None:
         c.execute(
             "INSERT OR REPLACE INTO actor_films_cache (actor_id, fetched_at, films_json) VALUES (?, ?, ?)",
             (actor_id, time.time(), json.dumps(films, ensure_ascii=False)),
+        )
+
+
+def jav_search_cache_get(code: str) -> Optional[list[dict]]:
+    with _lock, _db() as c:
+        row = c.execute(
+            "SELECT fetched_at, candidates_json FROM jav_search_cache WHERE code = ?",
+            (code.upper(),),
+        ).fetchone()
+    if row and _ttl_ok(row["fetched_at"]):
+        return json.loads(row["candidates_json"])
+    return None
+
+
+def jav_search_cache_set(code: str, candidates: list[dict]) -> None:
+    with _lock, _db() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO jav_search_cache (code, fetched_at, candidates_json) VALUES (?, ?, ?)",
+            (code.upper(), time.time(), json.dumps(candidates, ensure_ascii=False)),
         )
 
 

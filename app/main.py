@@ -13,8 +13,8 @@ from fastapi.templating import Jinja2Templates
 from . import store
 from .classifier import classify
 from .config import settings
-from . import discover
-from .exists import check_input as check_existence
+from . import discover, jav_search
+from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
 from .qbt_client import QbtClient
@@ -188,14 +188,35 @@ async def _dispatch(text: str, kind: str, hints: dict):
     if kind == "media_name":
         return await _handle_media_name(text, hints)
     if kind == "jav_code":
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "jav_code search not implemented yet (Phase 1 TODO)",
-                "hint": "paste the magnet link directly for now",
-            },
-        )
+        return await _handle_jav_code(text, hints)
     raise HTTPException(400, f"unknown kind: {kind}")
+
+
+async def _handle_jav_code(text: str, hints: dict) -> JSONResponse:
+    """User pasted a bare 番号 — search sukebei and return ranked magnet candidates."""
+    code = (hints.get("code") or text).strip().upper()
+    candidates = await jav_search.search_jav_code(code, limit=20)
+    tid = store.add(
+        kind="jav_code",
+        input_text=text,
+        state="search_done" if candidates else "search_empty",
+        title=code,
+    )
+    if not candidates:
+        return JSONResponse({
+            "task_id": tid,
+            "kind": "jav_code",
+            "code": code,
+            "candidates": [],
+            "hint": "sukebei 没找到这个番号的种。可以试试: 1) 直接贴磁力链; 2) 等几小时再搜（新发的种需要时间被索引）",
+        })
+    return JSONResponse({
+        "task_id": tid,
+        "kind": "jav_code",
+        "code": code,
+        "candidates": candidates,
+        "message": f"找到 {len(candidates)} 个种子候选",
+    })
 
 
 def _attach_existence(resp: JSONResponse, existence: dict) -> JSONResponse:
@@ -356,6 +377,93 @@ async def discover_page(request: Request, name: str = "", actor_id: str = ""):
             "initial_actor_id": actor_id,
         },
     )
+
+
+@app.get("/api/jav-search")
+async def api_jav_search(code: str, refresh: bool = False, limit: int = 20):
+    """Phase 1 — list magnet candidates for a 番号 (no submission)."""
+    if not code:
+        raise HTTPException(400, "code required")
+    candidates = await jav_search.search_jav_code(code.upper(), limit=limit, force_refresh=refresh)
+    return {"code": code.upper(), "candidates": candidates, "total": len(candidates)}
+
+
+@app.post("/api/jav-add")
+async def api_jav_add(magnet: str = Form(...), code: str = Form("")):
+    """Add a single magnet to qBT JAV category. Used by /submit jav_code flow + Phase 2 batch."""
+    if not magnet.startswith("magnet:"):
+        raise HTTPException(400, "magnet must start with 'magnet:'")
+
+    qbt = QbtClient()
+    try:
+        await qbt.add_url(
+            magnet,
+            category=settings.qbt_jav_category,
+            save_path=settings.qbt_jav_savepath,
+        )
+    finally:
+        await qbt.close()
+
+    tid = store.add(
+        kind="jav_magnet",
+        input_text=magnet[:200],
+        state="downloading",
+        title=code or "(unknown)",
+    )
+    return {"task_id": tid, "code": code, "state": "downloading"}
+
+
+@app.post("/api/bulk-subscribe")
+async def api_bulk_subscribe(codes_csv: str = Form(...)):
+    """Phase 2 batch path: take a comma-separated list of codes, search each on
+    sukebei (using cache), pick the best candidate, add to qBT.
+
+    Returns a per-code report so the UI can show what succeeded/failed.
+    """
+    codes = [c.strip().upper() for c in codes_csv.split(",") if c.strip()]
+    if not codes:
+        raise HTTPException(400, "codes_csv empty")
+
+    # One concurrent qBT client for the whole batch
+    qbt = QbtClient()
+    results: list[dict] = []
+    try:
+        for code in codes:
+            try:
+                candidates = await jav_search.search_jav_code(code, limit=20)
+                best = jav_search.best_candidate(candidates)
+                if not best:
+                    results.append({"code": code, "ok": False, "reason": "no candidates"})
+                    continue
+                await qbt.add_url(
+                    best["magnet"],
+                    category=settings.qbt_jav_category,
+                    save_path=settings.qbt_jav_savepath,
+                )
+                store.add(
+                    kind="jav_magnet",
+                    input_text=f"bulk: {code}",
+                    state="downloading",
+                    title=best["title"][:200],
+                )
+                results.append({
+                    "code": code, "ok": True,
+                    "picked": {
+                        "title": best["title"],
+                        "size": best["size_str"],
+                        "seeders": best["seeders"],
+                        "quality_score": best["quality_score"],
+                        "info_hash": best["info_hash"],
+                    },
+                })
+            except Exception as e:
+                log.exception("bulk subscribe %s failed: %s", code, e)
+                results.append({"code": code, "ok": False, "reason": str(e)[:200]})
+    finally:
+        await qbt.close()
+
+    ok_count = sum(1 for r in results if r["ok"])
+    return {"total": len(codes), "ok": ok_count, "failed": len(codes) - ok_count, "results": results}
 
 
 @app.get("/api/discover/actor")

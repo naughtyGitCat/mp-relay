@@ -123,7 +123,8 @@
 
   <div id="floatbar">
     <span>已选 <strong id="sel-count">0</strong> 部 / 共 <span id="total-count">0</span>，已拥有 <span id="owned-count">0</span></span>
-    <button id="bulk-btn" disabled title="Phase 1 完成后启用">批量订阅 (Phase 1 待启用)</button>
+    <button id="bulk-btn" disabled>批量加入 qBT</button>
+    <span id="bulk-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
 
 <script>
@@ -230,8 +231,45 @@ async function loadFilms(actorId, refresh) {
 
 function updateFloat() {
   selCount.textContent = selected.size;
-  // bulk-btn stays disabled until Phase 1 ships; but selected count still surfaces
+  document.getElementById('bulk-btn').disabled = selected.size === 0;
 }
+
+document.getElementById('bulk-btn').addEventListener('click', async () => {
+  if (!selected.size) return;
+  const btn = document.getElementById('bulk-btn');
+  const out = document.getElementById('bulk-result');
+  btn.disabled = true;
+  out.textContent = `正在批量搜种并加入 qBT (${selected.size} 部)…`;
+
+  const fd = new FormData();
+  fd.set('codes_csv', Array.from(selected).join(','));
+  const r = await fetch('/api/bulk-subscribe', { method: 'POST', body: fd });
+  const data = await r.json();
+
+  out.textContent = `完成: ${data.ok}/${data.total} 成功`;
+  // Mark successful ones with a temporary state badge in the grid
+  for (const item of data.results || []) {
+    const el = grid.querySelector(`.film[data-code="${CSS.escape(item.code)}"]`);
+    if (!el) continue;
+    el.classList.remove('selected');
+    const sel = el.querySelector('.badge.sel'); if (sel) sel.remove();
+    if (item.ok) {
+      el.classList.add('owned');
+      const b = document.createElement('span'); b.className = 'badge owned';
+      b.textContent = '加入下载'; b.style.background = 'var(--accent)';
+      el.appendChild(b);
+    } else {
+      const b = document.createElement('span'); b.className = 'badge';
+      b.textContent = '✗'; b.style.background = 'var(--error)'; b.style.color = 'white';
+      b.title = item.reason || 'failed';
+      b.style.position = 'absolute'; b.style.top = '6px'; b.style.right = '6px';
+      el.appendChild(b);
+    }
+  }
+  selected.clear();
+  updateFloat();
+  btn.disabled = true;
+});
 
 searchBtn.addEventListener('click', () => searchActors(false));
 refreshBtn.addEventListener('click', () => searchActors(true));
