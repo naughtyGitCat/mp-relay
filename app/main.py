@@ -453,6 +453,22 @@ async def api_jav_search(code: str, refresh: bool = False, limit: int = 20):
     return {"code": code.upper(), "candidates": candidates, "total": len(candidates)}
 
 
+@app.get("/api/jav-keyword-search")
+async def api_jav_keyword_search(q: str, limit: int = 20):
+    """Free-text magnet search via sukebei — no code-strict filter.
+
+    Use case: user got a Bangumi match for a Chinese fan-translation, the JP
+    name is now known, but it's not a JAV-style 番号. This lets the UI feed
+    the JP name directly to sukebei for a torrent search without forcing it
+    through the code-search ranker.
+    """
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(400, "q required")
+    candidates = await jav_search.search_keyword(q, limit=limit)
+    return {"keyword": q, "candidates": candidates, "total": len(candidates)}
+
+
 @app.post("/api/jav-add")
 async def api_jav_add(magnet: str = Form(...), code: str = Form("")):
     """Add a single magnet to qBT JAV category. Used by /submit jav_code flow + Phase 2 batch."""

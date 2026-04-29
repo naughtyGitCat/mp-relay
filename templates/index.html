@@ -212,11 +212,13 @@ async function doSubmit(force = false) {
     let bangumiHtml = '';
     if (data.bangumi_match) {
       const bm = data.bangumi_match;
-      bangumiHtml = `<div style="margin:12px 0; padding:10px 12px; background:rgba(74,158,255,0.08); border-left:3px solid var(--accent); border-radius:4px; font-size:13px;">
-        <strong>📚 Bangumi 找到了:</strong>
-        <a href="${escape(bm.url)}" target="_blank" rel="noopener" style="margin-left:6px;">${escape(bm.name || '')}</a>
-        ${bm.name_cn ? `<span style="color:var(--muted)"> · ${escape(bm.name_cn)}</span>` : ''}
-        <span style="color:var(--muted); font-size:11px; margin-left:6px;">#${escape(String(bm.id))}</span>
+      bangumiHtml = `<div id="bangumi-banner" style="margin:12px 0; padding:10px 12px; background:rgba(74,158,255,0.08); border-left:3px solid var(--accent); border-radius:4px; font-size:13px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <span><strong>📚 Bangumi 找到了:</strong>
+          <a href="${escape(bm.url)}" target="_blank" rel="noopener" style="margin-left:6px;">${escape(bm.name || '')}</a>
+          ${bm.name_cn ? `<span style="color:var(--muted)"> · ${escape(bm.name_cn)}</span>` : ''}
+          <span style="color:var(--muted); font-size:11px; margin-left:6px;">#${escape(String(bm.id))}</span>
+        </span>
+        ${bm.name ? `<button id="bgm-magnet-btn" data-jp="${escape(bm.name)}" style="margin-left:auto; padding:4px 10px; font-size:12px;">🧲 用日文名搜种子</button>` : ''}
       </div>`;
     }
 
@@ -254,6 +256,12 @@ async function doSubmit(force = false) {
       candEl.innerHTML = html;
     } else {
       setTimeout(() => location.reload(), 1500);
+    }
+
+    // Wire the "用日文名搜种子" button that may have been rendered above.
+    const bgmMagnetBtn = document.getElementById('bgm-magnet-btn');
+    if (bgmMagnetBtn) {
+      bgmMagnetBtn.addEventListener('click', () => doKeywordMagnetSearch(bgmMagnetBtn.dataset.jp));
     }
   } catch (err) {
     result.className = 'err';
@@ -386,6 +394,44 @@ async function doJavAdd(d) {
     ? '<strong>已加入 qBT JAV 队列</strong> task=<code>' + escape(j.task_id) + '</code> — watcher 会在下载完成后自动 mdcx 刮削'
     : '<strong>失败</strong><pre>' + JSON.stringify(j, null, 2) + '</pre>';
   candEl.innerHTML = '';
+}
+
+async function doKeywordMagnetSearch(keyword) {
+  // Phase 1.7 — driven by the "🧲 用日文名搜种子" button in the Bangumi banner.
+  // Hits sukebei free-text search, lets user pick a magnet just like the
+  // 番号 flow.
+  const banner = document.getElementById('bangumi-banner');
+  const btn = document.getElementById('bgm-magnet-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '搜索中…'; }
+
+  const r = await fetch('/api/jav-keyword-search?' + new URLSearchParams({q: keyword, limit: 30}));
+  const j = await r.json();
+  if (btn) { btn.disabled = false; btn.textContent = '🧲 用日文名搜种子'; }
+
+  if (!r.ok) {
+    candEl.innerHTML = (banner ? banner.outerHTML : '') +
+      '<div class="err" style="margin-top:8px;padding:10px"><strong>搜索失败</strong><pre>' + JSON.stringify(j, null, 2) + '</pre></div>';
+    return;
+  }
+
+  const cands = j.candidates || [];
+  let html = (banner ? banner.outerHTML : '');
+  html += '<h3 style="font-size:14px; margin:12px 0 8px;">'
+    + '关键字 <code>' + escape(keyword) + '</code> 搜到 ' + cands.length + ' 个种子'
+    + (cands.length ? ':' : ' — sukebei 没收录这个关键字。可以换更短的标题片段试试，或直接 ' +
+        '<a href="https://sukebei.nyaa.si/?q=' + encodeURIComponent(keyword) + '" target="_blank" rel="noopener">手动去 sukebei 找</a>。') + '</h3>';
+  if (cands.length) {
+    html += cands.map(c => renderJavCandidate(c)).join('');
+  }
+  candEl.innerHTML = html;
+  candEl.querySelectorAll('button[data-magnet]').forEach(b => {
+    b.addEventListener('click', () => doJavAdd(b.dataset));
+  });
+  // Re-wire the (now-cloned) keyword search button on the regenerated banner
+  const newBtn = document.getElementById('bgm-magnet-btn');
+  if (newBtn) {
+    newBtn.addEventListener('click', () => doKeywordMagnetSearch(newBtn.dataset.jp));
+  }
 }
 
 async function doSubscribe(d) {
