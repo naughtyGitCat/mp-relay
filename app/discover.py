@@ -1,9 +1,17 @@
-"""Phase 2 — actor discovery via JavBus HTML scraping.
+"""Phase 2 — actor / series / studio / genre / director discovery via JavBus HTML scraping.
 
 JavBus has stable URL patterns:
-  - /searchstar/<name>            → list of matching actors (or 1 actor's page directly)
-  - /star/<id>                    → first page of an actor's films
-  - /star/<id>/<page>             → subsequent pages (1 page = 30 items)
+  - /searchstar/<name>            → list of matching actors
+  - /star/<id>[/<page>]           → actor's films
+  - /series/<id>[/<page>]         → series' films
+  - /studio/<id>[/<page>]         → studio's films
+  - /genre/<id>[/<page>]          → genre's films
+  - /director/<id>[/<page>]       → director's films
+
+All listing pages share the same ``a.movie-box`` markup, so the per-page
+parser ``_parse_film_list`` is reused across all kinds. The cache key for
+non-actor listings is composite — ``"<kind>:<id>"`` — which is safe because
+JavBus actor IDs don't contain colons.
 
 We scrape minimum-needed fields and cache aggressively in SQLite (24h TTL).
 """
@@ -202,6 +210,84 @@ async def actor_films(actor_id: str, *, max_pages: Optional[int] = None,
                 break
 
     store.actor_films_cache_set(actor_id, films)
+    return films
+
+
+# ---------------------------------------------------------------------------
+# Series / Studio / Genre / Director listings
+# ---------------------------------------------------------------------------
+
+# Kinds we know how to fetch. Maps to the JavBus path segment.
+_VALID_KINDS: frozenset[str] = frozenset({"star", "series", "studio", "genre", "director"})
+
+
+def parse_javbus_url(url: str) -> Optional[tuple[str, str]]:
+    """Extract (kind, id) from a JavBus URL the user pasted.
+
+    Accepts either bare paths or full URLs:
+      https://www.javbus.com/series/RPC      → ("series", "RPC")
+      /studio/5XS                            → ("studio", "5XS")
+      https://www.javbus.com/genre/d4        → ("genre", "d4")
+
+    Returns None if the URL doesn't match a known listing path.
+    """
+    if not url:
+        return None
+    m = re.search(r"/(star|series|studio|genre|director)/([A-Za-z0-9_]+)", url)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+async def films_by_kind(kind: str, kind_id: str, *,
+                        max_pages: Optional[int] = None,
+                        force_refresh: bool = False) -> list[dict]:
+    """Fetch films for a series / studio / genre / director (or actor).
+
+    Cache key in actor_films_cache is ``"<kind>:<id>"`` for non-actor kinds
+    (actors keep their bare ID for backwards compat).
+    """
+    if kind not in _VALID_KINDS:
+        raise ValueError(f"unknown kind {kind!r}; expected one of {sorted(_VALID_KINDS)}")
+
+    cache_key = kind_id if kind == "star" else f"{kind}:{kind_id}"
+    cached = store.actor_films_cache_get(cache_key) if not force_refresh else None
+    if cached is not None:
+        return cached
+
+    if max_pages is None:
+        max_pages = settings.discover_max_pages
+    base = settings.javbus_base
+    films: list[dict] = []
+    seen_codes: set[str] = set()
+
+    async with _make_client() as c:
+        for page in range(1, max_pages + 1):
+            path = f"/{kind}/{kind_id}" if page == 1 else f"/{kind}/{kind_id}/{page}"
+            url = f"{base}{path}"
+            log.info("javbus %s films: %s", kind, url)
+            try:
+                r = await c.get(url)
+            except httpx.HTTPError as e:
+                log.warning("javbus %s page %s failed: %s", kind, url, e)
+                break
+            if r.status_code != 200:
+                log.warning("javbus %s page %s → HTTP %s", kind, url, r.status_code)
+                break
+
+            page_films, has_next = _parse_film_list(r.text, base)
+            new_count = 0
+            for f in page_films:
+                if f["code"] not in seen_codes:
+                    seen_codes.add(f["code"])
+                    films.append(f)
+                    new_count += 1
+            if not new_count:
+                break
+            if not has_next:
+                break
+
+    store.actor_films_cache_set(cache_key, films)
     return films
 
 

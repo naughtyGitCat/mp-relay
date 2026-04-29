@@ -12,10 +12,11 @@ from fastapi.templating import Jinja2Templates
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from . import metrics as m
+from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import discover, jav_search
+from . import discover, gfriends, jav_search, media_fallback
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -102,10 +103,12 @@ async def index(request: Request):
 
 @app.get("/health")
 async def health():
-    err = await mdcx_healthcheck()
+    mdcx_err = await mdcx_healthcheck()
+    tg_err = await notify.healthcheck()
     return {
-        "ok": err is None,
-        "mdcx": "ok" if err is None else err,
+        "ok": mdcx_err is None,
+        "mdcx": "ok" if mdcx_err is None else mdcx_err,
+        "telegram": "ok" if tg_err is None else tg_err,
     }
 
 
@@ -294,23 +297,53 @@ async def _handle_regular_magnet(text: str, kind: str, hints: dict) -> JSONRespo
 
 
 async def _handle_media_name(text: str, hints: dict) -> JSONResponse:
-    """Search MoviePilot for the title; return candidates for the user to pick."""
+    """Search MoviePilot for the title; return candidates for the user to pick.
+
+    Phase 1.5 fallback: when MP returns zero candidates, ask AniList for
+    alternate titles (English / romaji / native / synonyms) and re-search MP
+    with each. Useful for Chinese fan-translations TMDB doesn't index.
+    """
     mp = MpClient()
     candidates = await mp.search_media(text)
+
+    fallback_used: list[dict] = []
+    if not candidates:
+        alts = await media_fallback.alternate_titles_anilist(text, limit=5)
+        for alt in alts:
+            try:
+                alt_candidates = await mp.search_media(alt["title"])
+            except Exception as e:
+                log.warning("media_fallback re-search failed for %s: %s", alt["title"], e)
+                continue
+            if alt_candidates:
+                # Tag each candidate with how we found it so UI can show the path.
+                for c in alt_candidates:
+                    c.setdefault("_via", alt["via"])
+                    c.setdefault("_alt_title", alt["title"])
+                candidates.extend(alt_candidates)
+                fallback_used.append({"title": alt["title"], "via": alt["via"], "found": len(alt_candidates)})
+            if len(candidates) >= 10:
+                break
+
     tid = store.add(
         kind="media_name",
         input_text=text,
-        state="search_done",
-        mp_response={"candidates_count": len(candidates)},
+        state="search_done" if candidates else "search_empty",
+        mp_response={
+            "candidates_count": len(candidates),
+            "fallback_used": fallback_used,
+        },
     )
     payload: dict = {
         "task_id": tid,
         "kind": "media_name",
         "candidates": candidates[:10],
     }
+    if fallback_used:
+        payload["fallback_used"] = fallback_used
     if not candidates:
         payload["hint"] = (
-            "MoviePilot 没找到该标题。可以试试: "
+            "MoviePilot 和 AniList fallback 都没找到。可以试试: "
             "1) 英文/日文原名 (e.g. 'Nope' instead of '不'); "
             "2) 直接贴 TMDB ID (e.g. 'tmdb:762504'); "
             "3) 贴 TMDB 详情页 URL (e.g. 'https://www.themoviedb.org/movie/762504'); "
@@ -481,6 +514,40 @@ async def api_bulk_subscribe(codes_csv: str = Form(...)):
     return {"total": len(codes), "ok": ok_count, "failed": len(codes) - ok_count, "results": results}
 
 
+@app.get("/api/discover/films")
+async def api_discover_films(kind: str = "", id: str = "", url: str = "",
+                              refresh: bool = False):
+    """Phase 2c — list films for a series / studio / genre / director / actor.
+
+    Caller supplies either:
+      - kind + id  (e.g. kind=series, id=RPC), OR
+      - url        (a JavBus URL we'll parse — paste-friendly)
+    """
+    # Allow URL paste shortcut
+    if url and not (kind and id):
+        parsed = discover.parse_javbus_url(url)
+        if parsed is None:
+            return JSONResponse({"error": "could not parse JavBus URL"}, status_code=400)
+        kind, id = parsed
+
+    if not kind or not id:
+        return JSONResponse({"error": "kind+id (or url) required"}, status_code=400)
+
+    try:
+        films = await discover.films_by_kind(kind, id, force_refresh=refresh)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    discover.annotate_owned(films)
+    owned_count = sum(1 for f in films if f.get("owned"))
+    return JSONResponse({
+        "kind": kind,
+        "id": id,
+        "films": films,
+        "total": len(films),
+        "owned_count": owned_count,
+    })
+
+
 @app.get("/api/discover/actor")
 async def api_discover_actor(name: str = "", actor_id: str = "",
                               refresh: bool = False):
@@ -514,3 +581,20 @@ async def task_detail(task_id: str):
     if not t:
         raise HTTPException(404, "task not found")
     return t
+
+
+# ============================================================
+# Phase 2d: gfriends actor avatar fallback
+# ============================================================
+
+@app.get("/api/gfriends")
+async def api_gfriends(name: str = ""):
+    """Look up an actor's portrait URL on gfriends/gfriends.
+
+    Returns ``{name, url}`` on hit, ``{name, url: null}`` on miss. Used by
+    the discover UI as a fallback when JavBus actor cards have no photo.
+    """
+    if not name:
+        raise HTTPException(400, "name required")
+    url = await gfriends.find_actor_avatar_url(name)
+    return {"name": name, "url": url}

@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # this many attempts before giving up.
     qc_max_retries: int = 3
 
+    # --- Notifications (Telegram) ---
+    # Empty disables; on terminal pipeline events (qc exhausted, scrape failed,
+    # first successful merge, etc.) mp-relay sends a short message to this chat.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # If set, only these event kinds are forwarded. Empty = all event kinds.
+    telegram_event_filter: str = ""   # comma-separated, e.g. "qc_failed_exhausted,scrape_failed"
+
 
 settings = Settings()
 

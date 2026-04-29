@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>演员发现 — mp-relay</title>
+  <title>发现 — mp-relay</title>
   <style>
     :root {
       color-scheme: dark light;
@@ -95,6 +95,18 @@
     .badge.owned { background: var(--owned); color: white; }
     .badge.sel { background: var(--accent); color: white; }
 
+    .tabs {
+      display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      padding: 8px 14px; font: inherit; border: 0;
+      background: transparent; color: var(--muted); cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab:hover { color: var(--fg); }
+
     #floatbar {
       position: sticky; bottom: env(safe-area-inset-bottom, 12px);
       background: var(--card); border: 1px solid var(--accent); border-radius: 8px;
@@ -107,9 +119,17 @@
 </head>
 <body>
   <header>
-    <h1>🎬 演员发现</h1>
+    <h1>🎬 发现</h1>
     <div class="nav"><a href="/">← 回主页</a></div>
   </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="star">演员</button>
+    <button class="tab" data-tab="series">系列</button>
+    <button class="tab" data-tab="studio">厂牌</button>
+    <button class="tab" data-tab="genre">类别</button>
+    <button class="tab" data-tab="director">导演</button>
+  </div>
 
   <div class="input-card">
     <input type="text" id="q" placeholder="演员名（中/日/英）— 例: 葵つかさ" value="{{ initial_name }}">
@@ -140,9 +160,65 @@ const totalCount = document.getElementById('total-count');
 const ownedCount = document.getElementById('owned-count');
 
 const selected = new Set();
+let activeTab = 'star';   // star | series | studio | genre | director
+
+const TAB_PLACEHOLDERS = {
+  star:     '演员名（中/日/英）— 例: 葵つかさ',
+  series:   '粘贴 JavBus URL 或输入系列ID — 例: https://www.javbus.com/series/RPC',
+  studio:   '粘贴 JavBus URL 或输入厂牌ID — 例: /studio/5XS',
+  genre:    '粘贴 JavBus URL 或输入类别ID — 例: /genre/d4',
+  director: '粘贴 JavBus URL 或输入导演ID',
+};
+
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    activeTab = t.dataset.tab;
+    q.placeholder = TAB_PLACEHOLDERS[activeTab];
+    q.value = '';
+    actorsEl.innerHTML = '';
+    grid.innerHTML = '';
+    selected.clear(); updateFloat();
+    floatbar.classList.remove('show');
+    status.textContent = '';
+  });
+});
 
 function escape(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function doSearch(refresh = false) {
+  if (activeTab === 'star') return searchActors(refresh);
+  return loadByKind(activeTab, q.value.trim(), refresh);
+}
+
+async function loadByKind(kind, value, refresh) {
+  if (!value) return;
+  status.textContent = `加载 ${kind} 作品列表…`;
+  actorsEl.innerHTML = ''; grid.innerHTML = '';
+  selected.clear(); updateFloat();
+
+  // Decide whether the input is a URL or a bare ID
+  const params = new URLSearchParams({ refresh });
+  if (value.includes('/')) {
+    params.set('url', value);
+  } else {
+    params.set('kind', kind);
+    params.set('id', value);
+  }
+  const r = await fetch('/api/discover/films?' + params);
+  const data = await r.json();
+  if (data.error) {
+    status.textContent = '错误: ' + data.error;
+    return;
+  }
+  status.textContent = `${kind} ${data.id} — ${data.total} 部，已拥有 ${data.owned_count}`;
+  totalCount.textContent = data.total;
+  ownedCount.textContent = data.owned_count;
+  floatbar.classList.add('show');
+  renderFilms(data.films);
 }
 
 async function searchActors(refresh = false) {
@@ -199,8 +275,11 @@ async function loadFilms(actorId, refresh) {
   totalCount.textContent = data.total;
   ownedCount.textContent = data.owned_count;
   floatbar.classList.add('show');
+  renderFilms(data.films);
+}
 
-  grid.innerHTML = data.films.map((f, i) => `
+function renderFilms(films) {
+  grid.innerHTML = films.map((f, i) => `
     <div class="film ${f.owned ? 'owned' : ''}" data-code="${escape(f.code)}" data-idx="${i}">
       ${f.cover_url ? `<img class="cover" src="${escape(f.cover_url)}" referrerpolicy="no-referrer" loading="lazy">` : '<div class="cover"></div>'}
       ${f.owned ? '<span class="badge owned">✓ 已有</span>' : ''}
@@ -213,7 +292,7 @@ async function loadFilms(actorId, refresh) {
   grid.querySelectorAll('.film').forEach(el => {
     el.addEventListener('click', (e) => {
       const code = el.dataset.code;
-      if (el.classList.contains('owned')) return;  // can't select owned
+      if (el.classList.contains('owned')) return;
       if (selected.has(code)) {
         selected.delete(code); el.classList.remove('selected');
         const b = el.querySelector('.badge.sel'); if (b) b.remove();
@@ -271,9 +350,9 @@ document.getElementById('bulk-btn').addEventListener('click', async () => {
   btn.disabled = true;
 });
 
-searchBtn.addEventListener('click', () => searchActors(false));
-refreshBtn.addEventListener('click', () => searchActors(true));
-q.addEventListener('keydown', e => { if (e.key === 'Enter') searchActors(false); });
+searchBtn.addEventListener('click', () => doSearch(false));
+refreshBtn.addEventListener('click', () => doSearch(true));
+q.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(false); });
 
 {% if initial_name %}
 searchActors(false);
