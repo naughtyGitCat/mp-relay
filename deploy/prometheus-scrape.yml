@@ -1,0 +1,19 @@
+# Add this scrape job to your Prometheus config (typically prometheus.yml on
+# onething-oes-831). Then `systemctl reload prometheus` (or HUP it).
+#
+# After scraping, verify metrics show up:
+#   curl -s http://onething-oes-831:9090/api/v1/label/__name__/values | jq '.data[] | select(startswith("mp_relay_"))'
+#
+# Service must be reachable from the Prometheus host. mp-relay listens on
+# 0.0.0.0:5000 and has no auth — keep it on the trusted LAN.
+
+scrape_configs:
+  - job_name: mp-relay
+    static_configs:
+      - targets:
+          - 10.100.100.13:5000
+        labels:
+          service: mp-relay
+          host: media-server-win
+    scrape_interval: 30s
+    metrics_path: /metrics

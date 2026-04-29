@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 import httpx
 
+from . import metrics as m
 from . import store
 from .config import settings
 
@@ -191,20 +192,24 @@ async def search_jav_code(code: str, *, limit: int = 30,
 
     cached = store.jav_search_cache_get(code) if not force_refresh else None
     if cached is not None:
+        m.JAV_SEARCH_TOTAL.labels(result="cached").inc()
         return cached[:limit]
 
     url = f"https://sukebei.nyaa.si/?page=rss&q={quote(code)}&f=0&c=0_0"
     log.info("sukebei search: %s", url)
-    async with _make_client() as c:
-        try:
-            r = await c.get(url)
-        except httpx.HTTPError as e:
-            log.warning("sukebei search failed: %s", e)
-            return []
-        if r.status_code != 200:
-            log.warning("sukebei %s → HTTP %s", url, r.status_code)
-            return []
-        candidates = _parse_sukebei_rss(r.text)
+    with m.JAV_SEARCH_DURATION.time():
+        async with _make_client() as c:
+            try:
+                r = await c.get(url)
+            except httpx.HTTPError as e:
+                log.warning("sukebei search failed: %s", e)
+                m.JAV_SEARCH_TOTAL.labels(result="error").inc()
+                return []
+            if r.status_code != 200:
+                log.warning("sukebei %s → HTTP %s", url, r.status_code)
+                m.JAV_SEARCH_TOTAL.labels(result="error").inc()
+                return []
+            candidates = _parse_sukebei_rss(r.text)
 
     # Strict filter: title must contain the code (sukebei's search is fuzzy)
     code_norm = re.sub(r"[\s_\-\.]+", "", code)
@@ -222,6 +227,7 @@ async def search_jav_code(code: str, *, limit: int = 30,
     ))
 
     store.jav_search_cache_set(code, candidates)
+    m.JAV_SEARCH_TOTAL.labels(result="hit" if candidates else "empty").inc()
     return candidates[:limit]
 
 

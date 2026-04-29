@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from . import cleanup, jav_search, merger, qc, store
+from . import cleanup, jav_search, merger, metrics as m, qc, store
 from .config import settings
 from .exists import extract_code
 from .mdcx_runner import scrape_dir
@@ -75,33 +75,64 @@ async def _run_pre_mdcx_pipeline(target: str, tid: str) -> tuple[bool, str]:
     notes: list[str] = []
 
     # 1. Triage
-    triage = await cleanup.triage_dir(target)
+    async with m.timed_step("triage"):
+        triage = await cleanup.triage_dir(target)
     notes.extend(triage.notes)
+    m.PIPELINE_STEP_TOTAL.labels(step="triage", outcome="ok").inc()
 
     # 2. Delete junk + dupes + samples
-    del_logs = cleanup.execute(triage)
+    async with m.timed_step("execute"):
+        del_logs = cleanup.execute(triage)
     notes.extend(del_logs)
+    m.FILES_DELETED.labels(category="junk").inc(len(triage.delete_junk))
+    m.FILES_DELETED.labels(category="dupe").inc(len(triage.delete_dupes))
+    m.FILES_DELETED.labels(category="sample").inc(len(triage.delete_samples))
+    m.PIPELINE_STEP_TOTAL.labels(step="execute", outcome="ok").inc()
 
     # 3. Move extras into Extras/
-    extra_logs = cleanup.relocate_extras(triage, target)
+    async with m.timed_step("relocate_extras"):
+        extra_logs = cleanup.relocate_extras(triage, target)
     notes.extend(extra_logs)
+    if triage.extras:
+        m.EXTRAS_RELOCATED.inc(len(triage.extras))
+    m.PIPELINE_STEP_TOTAL.labels(
+        step="relocate_extras",
+        outcome="ok" if triage.extras else "skip",
+    ).inc()
 
     # 4. Disc archive remux (BDMV / VIDEO_TS → single .mkv)
     if settings.remux_disc_archives and triage.disc_archive is not None:
-        rr = await merger.remux_disc(triage.disc_archive)
+        async with m.timed_step("remux_disc"):
+            rr = await merger.remux_disc(triage.disc_archive)
         notes.append(rr.note)
+        # Detect kind from note (cheap; the note string is shaped "remuxed bdmv → ...").
+        kind = "bdmv" if "bdmv" in rr.note.lower() else "dvd"
         if rr.output_path is None:
+            m.DISC_REMUX.labels(kind=kind, outcome="fail").inc()
+            m.PIPELINE_STEP_TOTAL.labels(step="remux_disc", outcome="fail").inc()
             store.update(tid, error=f"disc remux failed: {rr.note}")
             return False, rr.note
+        m.DISC_REMUX.labels(kind=kind, outcome="success").inc()
+        m.PIPELINE_STEP_TOTAL.labels(step="remux_disc", outcome="ok").inc()
+    else:
+        m.PIPELINE_STEP_TOTAL.labels(step="remux_disc", outcome="skip").inc()
 
     # 5. Multipart merge (CD1+CD2+... → one file)
     if settings.merge_multipart and len(triage.multipart_parts) >= 2:
-        mr = await merger.merge_parts(triage.multipart_parts)
+        async with m.timed_step("merge_parts"):
+            mr = await merger.merge_parts(triage.multipart_parts)
         notes.append(mr.note)
         if mr.merged_path is None:
             # Fall back to Jellyfin-friendly naming so the parts aren't lost.
             rename_logs = merger.rename_parts_jellyfin(triage.multipart_parts)
             notes.extend(rename_logs)
+            m.MULTIPART_MERGED.labels(outcome="fallback_rename").inc()
+            m.PIPELINE_STEP_TOTAL.labels(step="merge_parts", outcome="fail").inc()
+        else:
+            m.MULTIPART_MERGED.labels(outcome="concat_copy").inc()
+            m.PIPELINE_STEP_TOTAL.labels(step="merge_parts", outcome="ok").inc()
+    else:
+        m.PIPELINE_STEP_TOTAL.labels(step="merge_parts", outcome="skip").inc()
 
     store.update(tid, mdcx_result={"pre_mdcx_notes": notes[:30]})
     return True, "; ".join(notes[-3:])
@@ -128,6 +159,8 @@ async def _retry_with_next_candidate(
             state="qc_failed_exhausted",
             error=f"QC failed {attempts}× — no more candidates: {qc_reason}",
         )
+        m.QC_RETRY.labels(outcome="exhausted").inc()
+        m.PIPELINE_RUN_TOTAL.labels(terminal_state="qc_failed_exhausted").inc()
         log.warning("[qc] task=%s code=%s exhausted retries: %s", tid, code, qc_reason)
         return False
 
@@ -140,6 +173,8 @@ async def _retry_with_next_candidate(
             state="qc_failed_no_alt",
             error=f"QC failed and no alternate candidate: {qc_reason}",
         )
+        m.QC_RETRY.labels(outcome="no_alt").inc()
+        m.PIPELINE_RUN_TOTAL.labels(terminal_state="qc_failed_no_alt").inc()
         log.warning("[qc] task=%s code=%s no alt candidate: %s", tid, code, qc_reason)
         return False
 
@@ -181,6 +216,8 @@ async def _retry_with_next_candidate(
 
     store.update(tid, state="qc_failed_retried",
                  error=f"QC failed: {qc_reason}; retried with {nxt['info_hash'][:8]}")
+    m.QC_RETRY.labels(outcome="swapped").inc()
+    m.PIPELINE_RUN_TOTAL.labels(terminal_state="qc_failed_retried").inc()
     return True
 
 
@@ -233,11 +270,19 @@ async def _process_done(qbt: QbtClient, t: dict) -> None:
     ok, note = await _run_pre_mdcx_pipeline(target, tid)
     if not ok:
         store.update(tid, state="pre_mdcx_failed", error=note)
+        m.PIPELINE_RUN_TOTAL.labels(terminal_state="pre_mdcx_failed").inc()
         return
 
     # Step 6: QC
-    qc_result = await qc.run_qc(target)
+    async with m.timed_step("qc"):
+        qc_result = await qc.run_qc(target)
+    qc_class = m.classify_qc_reason(qc_result.reason)
+    m.QC_RESULT.labels(
+        result="pass" if qc_result.passed else "fail",
+        reason_class=qc_class,
+    ).inc()
     if not qc_result.passed:
+        m.PIPELINE_STEP_TOTAL.labels(step="qc", outcome="fail").inc()
         log.warning("[qc] task=%s FAIL: %s", tid, qc_result.reason)
         code = extract_code(t.get("name") or "") or extract_code(target) or ""
         if code:
@@ -247,20 +292,40 @@ async def _process_done(qbt: QbtClient, t: dict) -> None:
                 tid, state="qc_failed",
                 error=f"QC failed and no JAV code parseable for retry: {qc_result.reason}",
             )
+            m.QC_RETRY.labels(outcome="no_code").inc()
+            m.PIPELINE_RUN_TOTAL.labels(terminal_state="qc_failed_no_code").inc()
         return
 
+    m.PIPELINE_STEP_TOTAL.labels(step="qc", outcome="ok").inc()
     log.info("[qc] task=%s OK: %s", tid, qc_result.reason)
     store.update(tid, state="scraping", error=None)
 
     # Step 7: mdcx scrape
-    result = await scrape_dir(target)
-    if result["rc"] == 0:
+    async with m.timed_step("mdcx"):
+        result = await scrape_dir(target)
+    if result.get("skipped"):
+        m.MDCX_RUN.labels(result="skipped").inc()
+        m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="skip").inc()
+    elif result["rc"] == 0:
+        m.MDCX_RUN.labels(result="ok").inc()
+        m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="ok").inc()
         # Step 8: post-mdcx cleanup
-        post_logs = cleanup.post_mdcx_cleanup(target)
+        async with m.timed_step("post_cleanup"):
+            post_logs = cleanup.post_mdcx_cleanup(target)
+        m.FILES_DELETED.labels(category="post_mdcx").inc(
+            sum(1 for line in post_logs if line.startswith("DELETE"))
+        )
+        m.PIPELINE_STEP_TOTAL.labels(step="post_cleanup", outcome="ok").inc()
         merged_result = {**result, "post_mdcx": post_logs[:50]}
         store.update(tid, state="scraped", mdcx_result=merged_result)
+        m.PIPELINE_RUN_TOTAL.labels(terminal_state="scraped").inc()
         log.info("[scrape] task=%s OK (post-cleanup deleted %d)", tid, len(post_logs))
     else:
+        # Distinguish timeout (rc=-1 + "timed out" stderr) from generic fail.
+        is_timeout = result["rc"] == -1 and "timed out" in (result.get("stderr") or "")
+        m.MDCX_RUN.labels(result="timeout" if is_timeout else "fail").inc()
+        m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="fail").inc()
+        m.PIPELINE_RUN_TOTAL.labels(terminal_state="scrape_failed").inc()
         store.update(
             tid, state="scrape_failed", mdcx_result=result,
             error=(result.get("stderr") or "")[:1000],
@@ -282,6 +347,13 @@ async def watch_loop(stop: asyncio.Event) -> None:
     seen_done: set[str] = set()  # in-memory dedupe; store.find_by_hash is the durable check
 
     while not stop.is_set():
+        # Refresh the inflight gauge each tick so /metrics reflects current
+        # task distribution by state.
+        try:
+            m.refresh_inflight_gauge(store.list_recent(limit=200))
+        except Exception as e:  # never let metrics break the watcher
+            log.debug("metrics refresh failed: %s", e)
+
         try:
             torrents = await qbt.list_torrents(category=settings.qbt_jav_category)
         except Exception as e:
