@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from . import store
 from .classifier import classify
 from .config import settings
+from .exists import check_input as check_existence
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
 from .qbt_client import QbtClient
@@ -101,14 +102,63 @@ async def health():
 # Submit
 # ============================================================
 
-@app.post("/submit")
-async def submit(request: Request, text: str = Form(...)):
+@app.post("/check")
+async def check(text: str = Form(...)):
+    """Look up whether the input already exists locally — without submitting anything."""
     text = text.strip()
     if not text:
         raise HTTPException(400, "empty input")
 
     kind, hints = classify(text)
-    log.info("submit kind=%s hints=%s text=%s", kind, hints, text[:80])
+    existence = await check_existence(text, kind, hints)
+    return JSONResponse({
+        "kind": kind,
+        "hints": hints,
+        **existence,
+    })
+
+
+@app.post("/submit")
+async def submit(
+    request: Request,
+    text: str = Form(...),
+    force: bool = Form(False),
+):
+    """Submit input. If existence detected and force=False, return 409 with details.
+
+    UI is expected to call /submit; if it gets 409, show the user a confirmation
+    UI and re-POST with force=true.
+    """
+    text = text.strip()
+    if not text:
+        raise HTTPException(400, "empty input")
+
+    kind, hints = classify(text)
+    log.info("submit kind=%s hints=%s force=%s text=%s",
+             kind, hints, force, text[:80])
+
+    # Existence pre-check (cheap; never blocks a media_name search since /check is informational only there).
+    if not force:
+        existence = await check_existence(text, kind, hints)
+        existing_jav = existence.get("existing_jav") or []
+        existing_media = existence.get("existing_media") or {}
+        has_dup = bool(
+            existing_jav
+            or existing_media.get("subscriptions")
+            or existing_media.get("downloads")
+        )
+        if has_dup and kind != "media_name":
+            # For magnets, hard-block until user confirms.
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "duplicate": True,
+                    "kind": kind,
+                    "hints": hints,
+                    **existence,
+                    "hint": "resubmit with force=true to add anyway",
+                },
+            )
 
     if kind == "jav_magnet" or kind == "jav_torrent":
         return await _handle_jav(text, kind, hints)
@@ -118,7 +168,6 @@ async def submit(request: Request, text: str = Form(...)):
         return await _handle_media_name(text, hints)
     if kind == "jav_code":
         # Phase 1 will implement bare-code → 馒头 PT search → list candidates.
-        # For now: refuse with a clear message.
         return JSONResponse(
             status_code=400,
             content={

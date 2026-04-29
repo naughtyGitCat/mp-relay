@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     mdcx_python: str = r"E:\mdcx-src\.venv\Scripts\python.exe"
     mdcx_module: str = "mdcx.cmd.main"
 
+    # --- Library paths (used by /check existence detection) ---
+    # JAV library that mdcx organizes into. Filesystem scan checks for code.
+    jav_library: str = r"E:\Jav"
+    # Plus the in-flight staging path so we also catch "downloading right now" cases.
+    jav_staging_extra: str = r"G:\Downloads\JAV-staging"
+
     # --- Service ---
     listen_host: str = "0.0.0.0"
     listen_port: int = 5000

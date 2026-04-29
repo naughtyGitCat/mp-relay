@@ -106,7 +106,8 @@
       <textarea name="text" id="input" placeholder="贴磁力链 (magnet:?xt=...) 或 .torrent URL 或媒体名 (《繁花》)" autofocus required></textarea>
       <div class="controls">
         <button type="submit" id="submit-btn">提交</button>
-        <span class="hint">JAV 走 qBT (cat: <code>{{ settings.qbt_jav_category }}</code>) → mdcx → <code>E:\Jav</code></span>
+        <button type="button" id="check-btn" style="background:transparent;color:var(--accent);border:1px solid var(--accent)">仅查重</button>
+        <span class="hint">JAV → qBT (<code>{{ settings.qbt_jav_category }}</code>) → mdcx → <code>{{ settings.jav_library }}</code></span>
       </div>
     </form>
     <div id="result"></div>
@@ -142,21 +143,27 @@
 <script>
 const form = document.getElementById('submit-form');
 const btn = document.getElementById('submit-btn');
+const checkBtn = document.getElementById('check-btn');
 const result = document.getElementById('result');
 const candEl = document.getElementById('candidates');
 
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
+async function doSubmit(force = false) {
   btn.disabled = true;
   result.className = '';
-  result.innerHTML = '处理中…';
+  result.innerHTML = force ? '强制提交中…' : '处理中…';
   result.style.display = 'block';
   candEl.innerHTML = '';
 
   try {
     const fd = new FormData(form);
+    if (force) fd.set('force', 'true');
     const r = await fetch('/submit', { method: 'POST', body: fd });
     const data = await r.json();
+
+    if (r.status === 409 && data.duplicate) {
+      renderDuplicate(data, /*allowForce=*/true);
+      return;
+    }
     if (!r.ok) {
       result.className = 'err';
       result.innerHTML = '<strong>失败</strong><pre>' + JSON.stringify(data, null, 2) + '</pre>';
@@ -175,7 +182,6 @@ form.addEventListener('submit', async (e) => {
         b.addEventListener('click', () => doSubscribe(b.dataset));
       });
     } else {
-      // Refresh page to show updated task list, after a beat
       setTimeout(() => location.reload(), 1500);
     }
   } catch (err) {
@@ -184,7 +190,58 @@ form.addEventListener('submit', async (e) => {
   } finally {
     btn.disabled = false;
   }
+}
+
+form.addEventListener('submit', (e) => { e.preventDefault(); doSubmit(false); });
+
+checkBtn.addEventListener('click', async () => {
+  const text = form.text.value.trim();
+  if (!text) return;
+  checkBtn.disabled = true;
+  result.className = '';
+  result.innerHTML = '查重中…';
+  result.style.display = 'block';
+  candEl.innerHTML = '';
+  try {
+    const fd = new FormData(); fd.set('text', text);
+    const r = await fetch('/check', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (data.existing_jav?.length || data.existing_media?.subscriptions?.length || data.existing_media?.downloads?.length) {
+      renderDuplicate(data, /*allowForce=*/false);
+    } else {
+      result.className = 'ok';
+      result.innerHTML = '<strong>没找到重复</strong> — kind=' + data.kind + (data.jav_code ? ', code=' + data.jav_code : '');
+    }
+  } finally {
+    checkBtn.disabled = false;
+  }
 });
+
+function renderDuplicate(data, allowForce) {
+  result.className = 'err';
+  let html = '<strong>⚠ 检测到已存在</strong>';
+  if (data.jav_code) html += ' (番号 <code>' + data.jav_code + '</code>)';
+  html += '<ul style="margin:8px 0; padding-left:20px;">';
+
+  for (const j of data.existing_jav || []) {
+    html += '<li><code>' + escape(j.in) + '</code> ' + escape(j.path) + '</li>';
+  }
+  for (const s of data.existing_media?.subscriptions || []) {
+    html += '<li>订阅: ' + escape(s.name) + (s.year ? ' (' + s.year + ')' : '') + ' state=' + escape(s.state || '') + '</li>';
+  }
+  for (const d of data.existing_media?.downloads || []) {
+    html += '<li>历史下载: ' + escape(d.title) + ' [' + escape(d.type || '') + '] ' + escape(d.date || '') + '</li>';
+  }
+  html += '</ul>';
+
+  if (allowForce) {
+    html += '<button id="force-btn" style="background:var(--error)">无视警告强制提交</button>';
+  }
+  result.innerHTML = html;
+  if (allowForce) {
+    document.getElementById('force-btn').addEventListener('click', () => doSubmit(true));
+  }
+}
 
 function renderCandidate(c) {
   const title = c.title || c.name || '(no title)';
