@@ -1,0 +1,11 @@
+.env
+state.db
+state.db-journal
+state.db-wal
+state.db-shm
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/

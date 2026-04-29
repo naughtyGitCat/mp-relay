@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>mp-relay</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #0e1116;
+      --fg: #d8d8d8;
+      --muted: #707070;
+      --accent: #4a9eff;
+      --accent-hover: #6bb1ff;
+      --border: #2a2a2a;
+      --card: #161b22;
+      --error: #f85149;
+      --ok: #3fb950;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f8fa;
+        --fg: #24292f;
+        --muted: #57606a;
+        --border: #d0d7de;
+        --card: #ffffff;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      margin: 0; padding: env(safe-area-inset-top, 0) 16px env(safe-area-inset-bottom, 16px);
+      background: var(--bg); color: var(--fg);
+      max-width: 900px; margin: 0 auto;
+    }
+    header { padding: 24px 0 16px; }
+    header h1 { margin: 0; font-size: 22px; }
+    header .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+    .input-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 16px; margin-bottom: 24px;
+    }
+    textarea {
+      width: 100%; min-height: 80px; padding: 12px; font: 13px monospace;
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 8px; resize: vertical;
+    }
+    .controls { display: flex; gap: 12px; margin-top: 12px; align-items: center; }
+    button {
+      background: var(--accent); color: white; border: 0;
+      padding: 10px 20px; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: 14px;
+    }
+    button:hover { background: var(--accent-hover); }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    .hint { color: var(--muted); font-size: 12px; flex: 1; text-align: right; }
+
+    #result { margin-top: 16px; padding: 12px; border-radius: 8px; display: none; }
+    #result.ok { background: rgba(63, 185, 80, 0.1); border: 1px solid var(--ok); display: block; }
+    #result.err { background: rgba(248, 81, 73, 0.1); border: 1px solid var(--error); display: block; }
+    #result pre { margin: 8px 0 0; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+
+    .candidates { margin-top: 12px; }
+    .candidate {
+      display: flex; gap: 12px; padding: 10px; border-bottom: 1px solid var(--border);
+    }
+    .candidate img { width: 60px; height: 90px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+    .candidate .meta { flex: 1; min-width: 0; }
+    .candidate .title { font-weight: 600; }
+    .candidate .info { color: var(--muted); font-size: 12px; margin: 4px 0; }
+    .candidate .overview { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .candidate .actions { display: flex; flex-direction: column; gap: 4px; }
+    .candidate .actions button { padding: 6px 12px; font-size: 12px; }
+
+    h2 { font-size: 16px; margin: 32px 0 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; font-size: 12px; }
+    .state { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .state-downloading { background: rgba(74, 158, 255, 0.2); color: var(--accent); }
+    .state-scraping { background: rgba(74, 158, 255, 0.2); color: var(--accent); }
+    .state-scraped { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
+    .state-scrape_failed { background: rgba(248, 81, 73, 0.15); color: var(--error); }
+    .state-mp_rejected { background: rgba(248, 81, 73, 0.15); color: var(--error); }
+    .state-submitted_to_mp { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
+    .state-search_done { background: rgba(112, 112, 112, 0.2); color: var(--muted); }
+    .state-subscribed { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
+    .truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ts { color: var(--muted); font-size: 11px; }
+
+    @media (max-width: 600px) {
+      .truncate { max-width: 160px; }
+      th.hide-mobile, td.hide-mobile { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>mp-relay</h1>
+    <div class="sub">磁力链 / 媒体名 → 自动分发 (普通媒体走 MoviePilot, JAV 走 mdcx)</div>
+  </header>
+
+  <div class="input-card">
+    <form id="submit-form">
+      <textarea name="text" id="input" placeholder="贴磁力链 (magnet:?xt=...) 或 .torrent URL 或媒体名 (《繁花》)" autofocus required></textarea>
+      <div class="controls">
+        <button type="submit" id="submit-btn">提交</button>
+        <span class="hint">JAV 走 qBT (cat: <code>{{ settings.qbt_jav_category }}</code>) → mdcx → <code>E:\Jav</code></span>
+      </div>
+    </form>
+    <div id="result"></div>
+    <div id="candidates" class="candidates"></div>
+  </div>
+
+  <h2>最近任务</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>时间</th>
+        <th>类型</th>
+        <th>输入 / 标题</th>
+        <th>状态</th>
+        <th class="hide-mobile">详情</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in tasks %}
+      <tr>
+        <td class="ts">{{ t.created_at | int | format_ts }}</td>
+        <td>{{ t.kind }}</td>
+        <td class="truncate" title="{{ t.title or t.input_text }}">{{ t.title or t.input_text }}</td>
+        <td><span class="state state-{{ t.state }}">{{ t.state }}</span></td>
+        <td class="hide-mobile truncate">{% if t.error %}<span style="color: var(--error)">{{ t.error[:60] }}</span>{% elif t.save_path %}{{ t.save_path }}{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="color: var(--muted); padding: 24px 0; text-align: center;">还没有提交记录</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+<script>
+const form = document.getElementById('submit-form');
+const btn = document.getElementById('submit-btn');
+const result = document.getElementById('result');
+const candEl = document.getElementById('candidates');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  btn.disabled = true;
+  result.className = '';
+  result.innerHTML = '处理中…';
+  result.style.display = 'block';
+  candEl.innerHTML = '';
+
+  try {
+    const fd = new FormData(form);
+    const r = await fetch('/submit', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) {
+      result.className = 'err';
+      result.innerHTML = '<strong>失败</strong><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+      return;
+    }
+    result.className = 'ok';
+    let msg = '<strong>已受理 (kind=' + data.kind + ')</strong>';
+    if (data.message) msg += '<br>' + data.message;
+    if (data.task_id) msg += '<br>task: <code>' + data.task_id + '</code>';
+    result.innerHTML = msg;
+
+    if (data.candidates && data.candidates.length) {
+      candEl.innerHTML = '<h3 style="font-size:14px; margin:12px 0 8px;">媒体搜索结果 — 选一个订阅:</h3>' +
+        data.candidates.map(c => renderCandidate(c)).join('');
+      candEl.querySelectorAll('button[data-tmdbid]').forEach(b => {
+        b.addEventListener('click', () => doSubscribe(b.dataset));
+      });
+    } else {
+      // Refresh page to show updated task list, after a beat
+      setTimeout(() => location.reload(), 1500);
+    }
+  } catch (err) {
+    result.className = 'err';
+    result.innerHTML = '<strong>请求失败</strong><pre>' + err + '</pre>';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderCandidate(c) {
+  const title = c.title || c.name || '(no title)';
+  const year = c.year ? ' (' + c.year + ')' : '';
+  const tmdbid = c.tmdb_id || c.tmdbid || '';
+  const type = c.type || (c.media_type === 'tv' ? '电视剧' : '电影');
+  const poster = c.poster_path || c.image || '';
+  const overview = (c.overview || c.description || '').slice(0, 200);
+  return `
+    <div class="candidate">
+      ${poster ? `<img src="${poster}" loading="lazy">` : '<div style="width:60px;height:90px;background:var(--border);border-radius:4px"></div>'}
+      <div class="meta">
+        <div class="title">${escape(title)}${year}</div>
+        <div class="info">${escape(type)} · TMDB ${tmdbid}</div>
+        <div class="overview">${escape(overview)}</div>
+      </div>
+      <div class="actions">
+        ${tmdbid ? `<button data-name="${escape(title)}" data-tmdbid="${tmdbid}" data-type="${escape(type)}">订阅</button>` : ''}
+      </div>
+    </div>`;
+}
+
+async function doSubscribe(d) {
+  const fd = new FormData();
+  fd.set('name', d.name);
+  fd.set('tmdbid', d.tmdbid);
+  fd.set('type', d.type || '电影');
+  const r = await fetch('/subscribe', { method: 'POST', body: fd });
+  const j = await r.json();
+  result.className = j.mp_response && j.mp_response.success ? 'ok' : 'err';
+  result.innerHTML = '<strong>订阅: ' + d.name + '</strong><pre>' + JSON.stringify(j.mp_response || j, null, 2) + '</pre>';
+  candEl.innerHTML = '';
+}
+
+function escape(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+</body>
+</html>

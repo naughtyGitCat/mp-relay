@@ -1,0 +1,96 @@
+"""Tiny SQLite-backed task store. Stores submission history + JAV scrape state."""
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from typing import Any, Optional
+
+from .config import settings
+
+_lock = threading.Lock()
+
+
+def _db() -> sqlite3.Connection:
+    c = sqlite3.connect(settings.state_db)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    return c
+
+
+def init() -> None:
+    with _lock, _db() as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id           TEXT PRIMARY KEY,
+                created_at   REAL NOT NULL,
+                updated_at   REAL NOT NULL,
+                kind         TEXT NOT NULL,
+                input_text   TEXT NOT NULL,
+                state        TEXT NOT NULL,
+                hash         TEXT,
+                save_path    TEXT,
+                title        TEXT,
+                mp_response  TEXT,
+                mdcx_result  TEXT,
+                error        TEXT
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_hash ON tasks(hash)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state)")
+
+
+def add(*, kind: str, input_text: str, state: str, **fields: Any) -> str:
+    tid = uuid.uuid4().hex[:12]
+    now = time.time()
+    cols = ["id", "created_at", "updated_at", "kind", "input_text", "state"]
+    vals: list[Any] = [tid, now, now, kind, input_text, state]
+    for k, v in fields.items():
+        cols.append(k)
+        vals.append(json.dumps(v) if k in ("mp_response", "mdcx_result") and not isinstance(v, str) else v)
+    placeholders = ", ".join("?" * len(cols))
+    with _lock, _db() as c:
+        c.execute(f"INSERT INTO tasks ({', '.join(cols)}) VALUES ({placeholders})", vals)
+    return tid
+
+
+def update(task_id: str, **fields: Any) -> None:
+    if not fields:
+        return
+    fields["updated_at"] = time.time()
+    sets = []
+    vals: list[Any] = []
+    for k, v in fields.items():
+        sets.append(f"{k} = ?")
+        if k in ("mp_response", "mdcx_result") and not isinstance(v, str):
+            vals.append(json.dumps(v, ensure_ascii=False))
+        else:
+            vals.append(v)
+    vals.append(task_id)
+    with _lock, _db() as c:
+        c.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals)
+
+
+def get(task_id: str) -> Optional[dict]:
+    with _lock, _db() as c:
+        row = c.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def find_by_hash(torrent_hash: str) -> Optional[dict]:
+    with _lock, _db() as c:
+        row = c.execute(
+            "SELECT * FROM tasks WHERE hash = ? ORDER BY created_at DESC LIMIT 1",
+            (torrent_hash,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_recent(limit: int = 50) -> list[dict]:
+    with _lock, _db() as c:
+        rows = c.execute(
+            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
