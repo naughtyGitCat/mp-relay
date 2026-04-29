@@ -132,6 +132,71 @@ def jav_search_cache_set(code: str, candidates: list[dict]) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Per-code retry state — track which info_hashes we've already tried so QC retry
+# can pick the next candidate without repeating itself.
+# ---------------------------------------------------------------------------
+
+def init_retry_state() -> None:
+    with _lock, _db() as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS jav_retry_state (
+                code            TEXT PRIMARY KEY,
+                tried_hashes    TEXT NOT NULL DEFAULT '[]',
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                last_state      TEXT,
+                last_reason     TEXT,
+                updated_at      REAL NOT NULL
+            )
+        """)
+
+
+def retry_get_tried(code: str) -> tuple[set[str], int]:
+    """Return (set_of_tried_hashes, attempts_so_far)."""
+    with _lock, _db() as c:
+        row = c.execute(
+            "SELECT tried_hashes, attempts FROM jav_retry_state WHERE code = ?",
+            (code.upper(),),
+        ).fetchone()
+    if not row:
+        return set(), 0
+    try:
+        return set(json.loads(row["tried_hashes"])), int(row["attempts"])
+    except Exception:
+        return set(), 0
+
+
+def retry_record_try(code: str, info_hash: str) -> None:
+    code = code.upper()
+    info_hash = info_hash.lower()
+    with _lock, _db() as c:
+        row = c.execute("SELECT tried_hashes FROM jav_retry_state WHERE code = ?", (code,)).fetchone()
+        tried = set(json.loads(row["tried_hashes"])) if row else set()
+        tried.add(info_hash)
+        c.execute(
+            """INSERT INTO jav_retry_state (code, tried_hashes, attempts, updated_at)
+               VALUES (?, ?, 1, ?)
+               ON CONFLICT(code) DO UPDATE SET
+                 tried_hashes = excluded.tried_hashes,
+                 attempts = jav_retry_state.attempts + 1,
+                 updated_at = excluded.updated_at""",
+            (code, json.dumps(sorted(tried)), time.time()),
+        )
+
+
+def retry_set_state(code: str, state: str, reason: str = "") -> None:
+    with _lock, _db() as c:
+        c.execute(
+            """INSERT INTO jav_retry_state (code, tried_hashes, last_state, last_reason, updated_at)
+               VALUES (?, '[]', ?, ?, ?)
+               ON CONFLICT(code) DO UPDATE SET
+                 last_state = excluded.last_state,
+                 last_reason = excluded.last_reason,
+                 updated_at = excluded.updated_at""",
+            (code.upper(), state, reason, time.time()),
+        )
+
+
 def add(*, kind: str, input_text: str, state: str, **fields: Any) -> str:
     tid = uuid.uuid4().hex[:12]
     now = time.time()

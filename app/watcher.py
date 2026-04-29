@@ -1,19 +1,39 @@
-"""Watch qBT for completed JAV-category torrents and trigger mdcx scrape."""
+"""Watch qBT for completed JAV torrents and run the post-download pipeline.
+
+Pipeline (per completed torrent):
+
+  1. triage       — classify files: keep / junk / dupe / sample / extras / parts / disc
+  2. execute      — delete junk + dupes + samples (extras are preserved)
+  3. relocate     — move extras into Extras/ subfolder
+  4. remux disc   — if BDMV / VIDEO_TS, ffmpeg-remux to a single .mkv
+  5. merge parts  — if multipart, ffmpeg concat-copy into one file
+                    (fall back to Jellyfin <name>-cd1.ext naming on codec mismatch)
+  6. QC           — ffprobe duration + min-size sanity check on the main file
+                    on FAIL → record tried hash, swap to next-best candidate from
+                    the cached sukebei search, re-add to qBT, return early.
+  7. mdcx         — scrape metadata
+  8. post-cleanup — sweep leftover .url/.txt/sample after mdcx
+
+Each step's outcome is written to the SQLite store so the /tasks UI can show
+where a job got to (or where it stalled).
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from typing import Iterable
+import os
+from pathlib import Path
+from typing import Optional
 
-from . import store
+from . import cleanup, jav_search, merger, qc, store
 from .config import settings
+from .exists import extract_code
 from .mdcx_runner import scrape_dir
 from .qbt_client import QbtClient
 
 log = logging.getLogger(__name__)
 
-# Torrent states that mean "download is complete and seeding/idle".
+# Torrent states meaning "download is complete and seeding/idle".
 _DONE_STATES = frozenset({
     "uploading", "stalledUP", "pausedUP", "queuedUP",
     "checkingUP", "forcedUP",
@@ -33,13 +53,6 @@ def _torrent_dir(t: dict) -> str:
     """
     cp = t.get("content_path") or ""
     if cp:
-        # If content_path is a file, mdcx wants its parent dir
-        # We can't stat the remote path from here, but qBT's content_path for
-        # multi-file torrents is the torrent root (a dir), and for single-file
-        # torrents is the file path. mdcx scrape dir handles a single file too
-        # by scanning the parent — but to be safe, hand over the parent if it
-        # looks like a file (has an extension).
-        import os
         base = os.path.basename(cp)
         if "." in base and not cp.endswith(("\\", "/")):
             # heuristic: looks like a file, use parent
@@ -48,11 +61,142 @@ def _torrent_dir(t: dict) -> str:
     return t.get("save_path") or ""
 
 
+# ---------------------------------------------------------------------------
+# Pipeline steps (each one updates store with its outcome notes).
+# ---------------------------------------------------------------------------
+
+
+async def _run_pre_mdcx_pipeline(target: str, tid: str) -> tuple[bool, str]:
+    """Steps 1-5: triage → execute → extras → disc remux → multipart merge.
+
+    Returns (ok, note). On ok=False the caller should mark the task failed and
+    not invoke mdcx; ``note`` is a human-readable reason.
+    """
+    notes: list[str] = []
+
+    # 1. Triage
+    triage = await cleanup.triage_dir(target)
+    notes.extend(triage.notes)
+
+    # 2. Delete junk + dupes + samples
+    del_logs = cleanup.execute(triage)
+    notes.extend(del_logs)
+
+    # 3. Move extras into Extras/
+    extra_logs = cleanup.relocate_extras(triage, target)
+    notes.extend(extra_logs)
+
+    # 4. Disc archive remux (BDMV / VIDEO_TS → single .mkv)
+    if settings.remux_disc_archives and triage.disc_archive is not None:
+        rr = await merger.remux_disc(triage.disc_archive)
+        notes.append(rr.note)
+        if rr.output_path is None:
+            store.update(tid, error=f"disc remux failed: {rr.note}")
+            return False, rr.note
+
+    # 5. Multipart merge (CD1+CD2+... → one file)
+    if settings.merge_multipart and len(triage.multipart_parts) >= 2:
+        mr = await merger.merge_parts(triage.multipart_parts)
+        notes.append(mr.note)
+        if mr.merged_path is None:
+            # Fall back to Jellyfin-friendly naming so the parts aren't lost.
+            rename_logs = merger.rename_parts_jellyfin(triage.multipart_parts)
+            notes.extend(rename_logs)
+
+    store.update(tid, mdcx_result={"pre_mdcx_notes": notes[:30]})
+    return True, "; ".join(notes[-3:])
+
+
+async def _retry_with_next_candidate(
+    qbt: QbtClient,
+    tid: str,
+    code: str,
+    failed_hash: str,
+    qc_reason: str,
+) -> bool:
+    """On QC fail, try the next-best alternate from the cached sukebei search.
+
+    Returns True if a retry was queued, False if we've exhausted options.
+    """
+    tried, attempts = store.retry_get_tried(code)
+    tried.add(failed_hash.lower())
+
+    if attempts >= settings.qc_max_retries:
+        store.retry_set_state(code, "qc_failed_exhausted", qc_reason)
+        store.update(
+            tid,
+            state="qc_failed_exhausted",
+            error=f"QC failed {attempts}× — no more candidates: {qc_reason}",
+        )
+        log.warning("[qc] task=%s code=%s exhausted retries: %s", tid, code, qc_reason)
+        return False
+
+    candidates = await jav_search.search_jav_code(code)
+    nxt = jav_search.best_candidate(candidates, exclude_hashes=tried)
+    if nxt is None:
+        store.retry_set_state(code, "qc_failed_no_alt", qc_reason)
+        store.update(
+            tid,
+            state="qc_failed_no_alt",
+            error=f"QC failed and no alternate candidate: {qc_reason}",
+        )
+        log.warning("[qc] task=%s code=%s no alt candidate: %s", tid, code, qc_reason)
+        return False
+
+    # Record the new hash as tried before adding (so the watcher won't re-pick
+    # it if QC fires again before we update state).
+    store.retry_record_try(code, nxt["info_hash"])
+    store.retry_set_state(code, "retry_queued", f"swap to {nxt['info_hash'][:8]}")
+
+    # Delete the failed torrent's files so we don't burn disk on a dud.
+    try:
+        await qbt.delete(failed_hash, delete_files=True)
+    except Exception as e:
+        log.warning("retry: failed to delete bad torrent %s: %s", failed_hash[:8], e)
+
+    # Queue the new magnet under the JAV category — the watcher will catch it
+    # when it completes via the same _process_done path.
+    await qbt.add_url(
+        nxt["magnet"],
+        category=settings.qbt_jav_category,
+        save_path=settings.qbt_jav_savepath,
+    )
+    log.info(
+        "[qc] task=%s code=%s retry queued: %s (suspicion=%d quality=%d seeders=%d)",
+        tid, code, nxt["info_hash"][:8],
+        nxt.get("suspicion_score", 0),
+        nxt.get("quality_score", 0),
+        nxt.get("seeders", 0),
+    )
+
+    # Track the new task so /tasks shows the retry chain.
+    store.add(
+        kind="jav_retry",
+        input_text=f"retry of {code} (after {failed_hash[:8]} failed QC)",
+        state="queued",
+        hash=nxt["info_hash"],
+        title=nxt["title"],
+        save_path=settings.qbt_jav_savepath,
+    )
+
+    store.update(tid, state="qc_failed_retried",
+                 error=f"QC failed: {qc_reason}; retried with {nxt['info_hash'][:8]}")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Top-level per-torrent handler
+# ---------------------------------------------------------------------------
+
+
 async def _process_done(qbt: QbtClient, t: dict) -> None:
-    """A JAV-category torrent reached done state — kick off mdcx, recording state."""
-    h = t["hash"]
+    """A JAV-category torrent reached done state — run the full pipeline."""
+    h: str = t["hash"]
     existing = store.find_by_hash(h)
-    if existing and existing.get("state") in ("scraped", "scrape_failed", "scraping"):
+    if existing and existing.get("state") in (
+        "scraped", "scrape_failed", "scraping",
+        "qc_failed_retried", "qc_failed_exhausted", "qc_failed_no_alt",
+    ):
         log.debug("hash=%s already processed (state=%s), skip", h[:8], existing["state"])
         return
 
@@ -64,37 +208,69 @@ async def _process_done(qbt: QbtClient, t: dict) -> None:
     if existing:
         store.update(
             existing["id"],
-            state="scraping",
+            state="processing",
             save_path=target,
             title=t.get("name"),
         )
         tid = existing["id"]
     else:
-        # Torrent wasn't added through us (e.g. user added directly to qBT under
-        # the JAV category) — record it now so we can track scrape result.
         tid = store.add(
             kind="jav_external",
             input_text=t.get("name") or "(qbt-direct)",
-            state="scraping",
+            state="processing",
             hash=h,
             save_path=target,
             title=t.get("name"),
         )
 
-    log.info("[scrape] task=%s hash=%s name=%s -> %s",
+    log.info("[pipeline] task=%s hash=%s name=%s -> %s",
              tid, h[:8], (t.get("name") or "")[:60], target)
 
-    # Wait a beat before mdcx, in case qBT is still moving files post-completion.
+    # Wait a beat in case qBT is still moving files post-completion.
     await asyncio.sleep(settings.mdcx_settle_sec)
 
+    # Steps 1-5: pre-mdcx triage + merge + remux
+    ok, note = await _run_pre_mdcx_pipeline(target, tid)
+    if not ok:
+        store.update(tid, state="pre_mdcx_failed", error=note)
+        return
+
+    # Step 6: QC
+    qc_result = await qc.run_qc(target)
+    if not qc_result.passed:
+        log.warning("[qc] task=%s FAIL: %s", tid, qc_result.reason)
+        code = extract_code(t.get("name") or "") or extract_code(target) or ""
+        if code:
+            await _retry_with_next_candidate(qbt, tid, code, h, qc_result.reason)
+        else:
+            store.update(
+                tid, state="qc_failed",
+                error=f"QC failed and no JAV code parseable for retry: {qc_result.reason}",
+            )
+        return
+
+    log.info("[qc] task=%s OK: %s", tid, qc_result.reason)
+    store.update(tid, state="scraping", error=None)
+
+    # Step 7: mdcx scrape
     result = await scrape_dir(target)
     if result["rc"] == 0:
-        store.update(tid, state="scraped", mdcx_result=result)
-        log.info("[scrape] task=%s OK", tid)
+        # Step 8: post-mdcx cleanup
+        post_logs = cleanup.post_mdcx_cleanup(target)
+        merged_result = {**result, "post_mdcx": post_logs[:50]}
+        store.update(tid, state="scraped", mdcx_result=merged_result)
+        log.info("[scrape] task=%s OK (post-cleanup deleted %d)", tid, len(post_logs))
     else:
-        store.update(tid, state="scrape_failed", mdcx_result=result,
-                     error=(result.get("stderr") or "")[:1000])
+        store.update(
+            tid, state="scrape_failed", mdcx_result=result,
+            error=(result.get("stderr") or "")[:1000],
+        )
         log.error("[scrape] task=%s FAILED rc=%s", tid, result["rc"])
+
+
+# ---------------------------------------------------------------------------
+# Watcher loop
+# ---------------------------------------------------------------------------
 
 
 async def watch_loop(stop: asyncio.Event) -> None:
