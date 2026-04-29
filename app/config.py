@@ -35,9 +35,27 @@ class Settings(BaseSettings):
 
     # --- Phase 2 discovery (actor / series / studio lookup) ---
     javbus_base: str = "https://www.javbus.com"
+    javdb_base: str = "https://javdb.com"
+    missav_base: str = "https://missav.com"
     discover_cache_ttl_sec: int = 24 * 3600     # 24h default
     discover_max_pages: int = 10                  # max paginated pages per actor
     discover_proxy: str = ""                      # override default httpx proxy if needed
+
+    # --- Phase 1 magnet sources ---
+    # CSV of magnet sources to query in parallel for each 番号 search.
+    # Order doesn't matter (queries run concurrently); same info_hash from
+    # multiple sources is deduped (first wins).
+    #
+    # Default = sukebei + javbus. JavDB and MissAV are Cloudflare-protected
+    # and require user-supplied session cookies (see *_cookie below) to work
+    # at all; opt in by adding "javdb" / "missav" to this list AND setting
+    # the matching cookie string.
+    jav_search_sources: str = "sukebei,javbus"
+    # Raw Cookie header string (e.g. "_ga=...; cf_clearance=...; ...") copied
+    # from a logged-in browser session. Empty disables that source even if
+    # listed in jav_search_sources.
+    javdb_cookie: str = ""
+    missav_cookie: str = ""
 
     # --- Service ---
     listen_host: str = "0.0.0.0"

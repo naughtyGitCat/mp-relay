@@ -39,7 +39,7 @@ The dashboard should be useful immediately. Submit a JAV code through mp-relay a
 | Metric | Type | Labels |
 |---|---|---|
 | `mp_relay_submit_total` | Counter | `kind`, `result` |
-| `mp_relay_jav_search_total` | Counter | `result` (cached/hit/empty/error) |
+| `mp_relay_jav_search_total` | Counter | `source` (sukebei/javbus/javdb/missav/cache), `result` (cached/hit/empty/error) |
 | `mp_relay_jav_search_duration_seconds` | Histogram | — |
 | `mp_relay_pipeline_step_total` | Counter | `step`, `outcome` (ok/fail/skip) |
 | `mp_relay_pipeline_step_duration_seconds` | Histogram | `step` |

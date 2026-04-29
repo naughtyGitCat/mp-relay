@@ -129,15 +129,15 @@
     },
     {
       "id": 7,
-      "title": "JAV search rate",
+      "title": "JAV search rate by source",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 18, "w": 12, "h": 6 },
       "fieldConfig": { "defaults": { "unit": "ops" } },
       "targets": [
         {
-          "expr": "sum by (result) (rate(mp_relay_jav_search_total[5m]))",
-          "legendFormat": "{{result}}",
+          "expr": "sum by (source, result) (rate(mp_relay_jav_search_total[5m]))",
+          "legendFormat": "{{source}} / {{result}}",
           "refId": "A"
         }
       ]

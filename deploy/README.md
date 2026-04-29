@@ -119,6 +119,7 @@ Remove-Item E:\mp-relay -Recurse -Force
 
 - **Prometheus + Grafana**: see [`grafana/README.md`](grafana/README.md) — drops a scrape job into the existing Prometheus on `onething-oes-831` and imports a 10-panel dashboard.
 - **Telegram notifications**: see [`telegram-setup.md`](telegram-setup.md) — 5-step BotFather → token → chat_id → `.env` → restart flow.
+- **More magnet sources** (JavDB / MissAV): see [`jav-sources.md`](jav-sources.md) — opt-in via browser-cookie extraction. Defaults (sukebei + JavBus) work without any setup.
 
 ## Troubleshooting
 

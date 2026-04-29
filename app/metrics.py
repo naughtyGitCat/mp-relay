@@ -42,17 +42,19 @@ SUBMIT_TOTAL: Counter = Counter(
 
 
 # ---------------------------------------------------------------------------
-# JAV search (sukebei)
+# JAV search (multi-source: sukebei + javbus + javdb + missav)
 # ---------------------------------------------------------------------------
 
 JAV_SEARCH_TOTAL: Counter = Counter(
     "mp_relay_jav_search_total",
-    "JAV code searches against sukebei.nyaa.si",
-    ["result"],  # cached | hit | empty | error
+    "JAV code searches per source",
+    ["source", "result"],
+    # source = sukebei | javbus | javdb | missav | cache
+    # result = cached | hit | empty | error
 )
 JAV_SEARCH_DURATION: Histogram = Histogram(
     "mp_relay_jav_search_duration_seconds",
-    "Time spent fetching+parsing sukebei (cache miss only)",
+    "Time spent on the multi-source fanout (cache miss only)",
     buckets=(0.1, 0.5, 1, 2, 5, 10, 30, 60),
 )
 
