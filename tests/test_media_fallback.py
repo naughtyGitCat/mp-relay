@@ -146,3 +146,105 @@ def test_alternate_titles_respects_limit():
     with patch("app.media_fallback.httpx.AsyncClient", fake):
         alts = asyncio.run(media_fallback.alternate_titles_anilist("漆黑的射干", limit=2))
     assert len(alts) == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.6: orchestrator combining AniList + Bangumi
+# ---------------------------------------------------------------------------
+
+def test_alternate_titles_all_merges_sources():
+    """Orchestrator queries both sources concurrently, merges results."""
+    from app import media_fallback
+
+    async def fake_anilist(q, **kw):
+        return [{"title": "Karasu wa Aruji", "via": "anilist:romaji"}]
+
+    async def fake_bangumi(q, **kw):
+        return [{"title": "漆黒のシャガ THE ANIMATION", "via": "bangumi:name", "bangumi_id": 210268}]
+
+    with patch("app.media_fallback.alternate_titles_anilist", fake_anilist), \
+         patch("app.media_fallback.bangumi.alternate_titles_bangumi", fake_bangumi):
+        merged = asyncio.run(media_fallback.alternate_titles_all("漆黑的射干"))
+    titles = [m["title"] for m in merged]
+    assert "Karasu wa Aruji" in titles
+    assert "漆黒のシャガ THE ANIMATION" in titles
+
+
+def test_alternate_titles_all_dedupes_across_sources():
+    """If both sources return the same title, only one entry survives.
+    AniList wins on tie because it's queried first in the orchestrator."""
+    from app import media_fallback
+
+    async def fake_anilist(q, **kw):
+        return [{"title": "Same Title", "via": "anilist:english"}]
+
+    async def fake_bangumi(q, **kw):
+        return [{"title": "Same Title", "via": "bangumi:name"}]
+
+    with patch("app.media_fallback.alternate_titles_anilist", fake_anilist), \
+         patch("app.media_fallback.bangumi.alternate_titles_bangumi", fake_bangumi):
+        merged = asyncio.run(media_fallback.alternate_titles_all("query"))
+    assert len(merged) == 1
+    assert merged[0]["via"] == "anilist:english"
+
+
+def test_alternate_titles_all_excludes_query_echo():
+    """Don't suggest the user's own input back to them, even if a source
+    happens to return it."""
+    from app import media_fallback
+
+    async def fake_anilist(q, **kw):
+        return [{"title": "MyQuery", "via": "anilist:english"}]    # echoes input
+
+    async def fake_bangumi(q, **kw):
+        return [{"title": "Real Alt", "via": "bangumi:name"}]
+
+    with patch("app.media_fallback.alternate_titles_anilist", fake_anilist), \
+         patch("app.media_fallback.bangumi.alternate_titles_bangumi", fake_bangumi):
+        merged = asyncio.run(media_fallback.alternate_titles_all("myquery"))
+    titles = [m["title"] for m in merged]
+    assert "MyQuery" not in titles
+    assert "Real Alt" in titles
+
+
+def test_alternate_titles_all_one_source_failing_doesnt_kill_other():
+    """asyncio.gather with return_exceptions=True isolates failures."""
+    from app import media_fallback
+
+    async def fake_anilist(q, **kw):
+        raise RuntimeError("anilist down")
+
+    async def fake_bangumi(q, **kw):
+        return [{"title": "Survivor", "via": "bangumi:name"}]
+
+    with patch("app.media_fallback.alternate_titles_anilist", fake_anilist), \
+         patch("app.media_fallback.bangumi.alternate_titles_bangumi", fake_bangumi):
+        merged = asyncio.run(media_fallback.alternate_titles_all("test"))
+    assert [m["title"] for m in merged] == ["Survivor"]
+
+
+def test_find_bangumi_match_returns_first_subject():
+    from app import media_fallback
+
+    async def fake_search(*a, **kw):
+        return [{"id": 210268, "name": "漆黒のシャガ THE ANIMATION",
+                 "name_cn": "漆黑的射干", "url": "http://bgm.tv/subject/210268",
+                 "type": 2}]
+
+    with patch("app.media_fallback.bangumi.search_subjects", fake_search):
+        match = asyncio.run(media_fallback.find_bangumi_match("漆黑的射干"))
+    assert match["id"] == 210268
+    assert match["name"] == "漆黒のシャガ THE ANIMATION"
+    assert match["name_cn"] == "漆黑的射干"
+    assert "210268" in match["url"]
+
+
+def test_find_bangumi_match_no_results():
+    from app import media_fallback
+
+    async def fake_search(*a, **kw):
+        return []
+
+    with patch("app.media_fallback.bangumi.search_subjects", fake_search):
+        match = asyncio.run(media_fallback.find_bangumi_match("nothing"))
+    assert match is None

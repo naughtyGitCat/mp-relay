@@ -5,6 +5,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -103,12 +104,15 @@ async def index(request: Request):
 
 @app.get("/health")
 async def health():
+    from . import bangumi as bgm
     mdcx_err = await mdcx_healthcheck()
     tg_err = await notify.healthcheck()
+    bgm_err = await bgm.healthcheck()
     return {
         "ok": mdcx_err is None,
         "mdcx": "ok" if mdcx_err is None else mdcx_err,
         "telegram": "ok" if tg_err is None else tg_err,
+        "bangumi": "ok" if bgm_err is None else bgm_err,
     }
 
 
@@ -299,16 +303,26 @@ async def _handle_regular_magnet(text: str, kind: str, hints: dict) -> JSONRespo
 async def _handle_media_name(text: str, hints: dict) -> JSONResponse:
     """Search MoviePilot for the title; return candidates for the user to pick.
 
-    Phase 1.5 fallback: when MP returns zero candidates, ask AniList for
-    alternate titles (English / romaji / native / synonyms) and re-search MP
-    with each. Useful for Chinese fan-translations TMDB doesn't index.
+    Phase 1.5 / 1.6 fallback chain: when MP returns zero candidates, query
+    AniList + Bangumi concurrently for alternate titles (English / romaji /
+    native / synonyms / Chinese-fan-translation), re-search MP with each, and
+    surface the Bangumi match in the response even when MP still comes up
+    empty (so the user at least sees what the work actually is + a bgm.tv
+    link to take it from there).
     """
     mp = MpClient()
     candidates = await mp.search_media(text)
 
     fallback_used: list[dict] = []
+    bangumi_match: Optional[dict] = None
     if not candidates:
-        alts = await media_fallback.alternate_titles_anilist(text, limit=5)
+        # Run both alt-title sources concurrently + a Bangumi single-match
+        # probe in parallel. Bangumi match is useful even if MP retry fails.
+        alts_task = asyncio.create_task(media_fallback.alternate_titles_all(text, limit=8))
+        bangumi_task = asyncio.create_task(media_fallback.find_bangumi_match(text))
+        alts = await alts_task
+        bangumi_match = await bangumi_task
+
         for alt in alts:
             try:
                 alt_candidates = await mp.search_media(alt["title"])
@@ -332,6 +346,7 @@ async def _handle_media_name(text: str, hints: dict) -> JSONResponse:
         mp_response={
             "candidates_count": len(candidates),
             "fallback_used": fallback_used,
+            "bangumi_match": bangumi_match,
         },
     )
     payload: dict = {
@@ -341,9 +356,11 @@ async def _handle_media_name(text: str, hints: dict) -> JSONResponse:
     }
     if fallback_used:
         payload["fallback_used"] = fallback_used
+    if bangumi_match:
+        payload["bangumi_match"] = bangumi_match
     if not candidates:
         payload["hint"] = (
-            "MoviePilot 和 AniList fallback 都没找到。可以试试: "
+            "MoviePilot / AniList / Bangumi 都没在 TMDB 找到。可以试试: "
             "1) 英文/日文原名 (e.g. 'Nope' instead of '不'); "
             "2) 直接贴 TMDB ID (e.g. 'tmdb:762504'); "
             "3) 贴 TMDB 详情页 URL (e.g. 'https://www.themoviedb.org/movie/762504'); "
