@@ -89,6 +89,11 @@ ssh <USER>@<HOST> 'powershell -Command "Restart-Service mp-relay"'
 Remove-Item C:\mp-relay -Recurse -Force
 ```
 
+## Optional integrations
+
+- **Prometheus + Grafana**: see [`grafana/README.md`](grafana/README.md) — drops a scrape job into the existing Prometheus on `onething-oes-831` and imports a 10-panel dashboard.
+- **Telegram notifications**: see [`telegram-setup.md`](telegram-setup.md) — 5-step BotFather → token → chat_id → `.env` → restart flow.
+
 ## Troubleshooting
 
 - **502 / blank UI**: check `C:\mp-relay\service-stderr.log`
@@ -96,3 +101,4 @@ Remove-Item C:\mp-relay -Recurse -Force
 - **qBT category not created**: check qBT WebUI is reachable from inside the service (`netstat -an | findstr 8080`)
 - **qBT login 401**: re-check `.env` `QBT_PASS`
 - **服务起不来**: `& $nssm status mp-relay` 看 stdout/stderr 路径
+- **Telegram `/health` shows error**: see [`telegram-setup.md`](telegram-setup.md#troubleshooting)
