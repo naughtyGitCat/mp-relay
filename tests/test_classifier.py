@@ -95,3 +95,20 @@ def test_is_jav_text_positive():
 def test_is_jav_text_negative():
     assert not is_jav_text("The Matrix 1999")
     assert not is_jav_text("繁花 第一季")
+
+
+def test_is_jav_text_case_insensitive():
+    """Regression: lowercase JAV codes used to fall through to media_name
+    because _JAV_PATTERNS[0] required uppercase. Real user typed 'snos-073'
+    and got 0 candidates instead of routing to jav_code (2026-04-29)."""
+    assert is_jav_text("snos-073")
+    assert is_jav_text("Snos-073")
+    assert is_jav_text("ssis-001 hot title")
+    assert is_jav_text("fc2-ppv-1234567")
+
+
+def test_classify_lowercase_jav_code_routes_to_jav_code():
+    """End-to-end classifier check for the snos-073 case."""
+    kind, hints = classify("snos-073")
+    assert kind == "jav_code"
+    assert hints["code"] == "SNOS-073"   # normalised to upper

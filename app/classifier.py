@@ -60,7 +60,12 @@ def _magnet_dn(magnet: str) -> str:
 
 
 def is_jav_text(s: str) -> bool:
-    return any(p.search(s) for p in _JAV_PATTERNS)
+    """JAV codes are conventionally uppercase but users paste whatever (lowercase
+    SNOS-073, mixed-case Snos-073). Normalize to upper before matching so the
+    patterns don't all need re.I (and so future-added patterns inherit the same
+    leniency)."""
+    upper = s.upper()
+    return any(p.search(upper) for p in _JAV_PATTERNS)
 
 
 def classify(raw: str) -> tuple[Kind, dict]:
