@@ -14,7 +14,10 @@ import re
 from typing import Literal
 from urllib.parse import unquote
 
-Kind = Literal["jav_magnet", "magnet", "jav_torrent", "torrent", "jav_code", "media_name"]
+Kind = Literal[
+    "jav_magnet", "magnet", "jav_torrent", "torrent",
+    "jav_code", "id_ref", "media_name",
+]
 
 # Patterns that imply Japanese AV content.
 # Designed to be specific enough to avoid false positives on regular media titles.
@@ -31,6 +34,17 @@ _JAV_PATTERNS: list[re.Pattern] = [
 
 _MAGNET_RE = re.compile(r"^magnet:\?", re.I)
 _TORRENT_URL_RE = re.compile(r"^https?://.+?\.torrent(?:\?.*)?$", re.I)
+
+# Direct ID references — bypass MP's title search.
+# tmdb:NNN / douban:NNN / bangumi:NNN / tt12345 (IMDB) / themoviedb.org URLs
+_ID_REF_RES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^tmdb:(\d+)$", re.I), "tmdbid"),
+    (re.compile(r"^douban:(\d+)$", re.I), "doubanid"),
+    (re.compile(r"^bangumi:(\d+)$", re.I), "bangumiid"),
+    (re.compile(r"^(tt\d{6,})$", re.I), "imdbid"),
+    (re.compile(r"^https?://(?:www\.)?themoviedb\.org/(movie|tv)/(\d+)", re.I), "tmdb_url"),
+    (re.compile(r"^https?://movie\.douban\.com/subject/(\d+)", re.I), "douban_url"),
+]
 _BARE_CODE_RES = (
     re.compile(r"^[A-Z]{2,5}-?\d{3,4}(?:-[A-Z])?$", re.I),
     re.compile(r"^FC2[-_ ]?PPV[-_ ]?\d{6,7}$", re.I),
@@ -69,6 +83,18 @@ def classify(raw: str) -> tuple[Kind, dict]:
         if is_jav_text(text):
             return "jav_torrent", {"url": text}
         return "torrent", {"url": text}
+
+    # Direct ID reference (skips MP search, queries media detail straight away).
+    # Examples: "tmdb:762504", "tt12345678", "https://www.themoviedb.org/movie/762504"
+    for pat, ref_kind in _ID_REF_RES:
+        m = pat.match(text)
+        if m:
+            if ref_kind == "tmdb_url":
+                return "id_ref", {"id_type": "tmdbid", "id_value": m.group(2),
+                                   "media_type": "movie" if m.group(1) == "movie" else "tv"}
+            if ref_kind == "douban_url":
+                return "id_ref", {"id_type": "doubanid", "id_value": m.group(1)}
+            return "id_ref", {"id_type": ref_kind, "id_value": m.group(1)}
 
     # Bare JAV code without any prefix? E.g. user pastes "SSIS-001" / "FC2-PPV-1234567"
     if any(p.match(text) for p in _BARE_CODE_RES) and is_jav_text(text):

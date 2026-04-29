@@ -80,6 +80,36 @@ class MpClient:
             return []
         return r.json() or []
 
+    async def media_detail(self, id_type: str, id_value: str,
+                           media_type: Optional[str] = None) -> Optional[dict]:
+        """Fetch a single media item by external ID.
+
+        id_type: tmdbid / imdbid / doubanid / bangumiid
+        media_type: 'movie' | 'tv' — required only for tmdbid in some MP versions.
+        Returns None if not found.
+        """
+        # MP's `/api/v1/media/{mediaid}` accepts mediaid in form `tmdb:123` / `douban:123`.
+        prefix_map = {
+            "tmdbid": "tmdb",
+            "doubanid": "douban",
+            "bangumiid": "bangumi",
+            "imdbid": "imdb",
+        }
+        prefix = prefix_map.get(id_type)
+        if not prefix:
+            return None
+        mediaid = f"{prefix}:{id_value}"
+        params: dict[str, str] = {}
+        if media_type and prefix == "tmdb":
+            params["type_name"] = media_type
+        r = await self.request("GET", f"/api/v1/media/{mediaid}", params=params)
+        if r.status_code != 200:
+            return None
+        try:
+            return r.json()
+        except Exception:
+            return None
+
     async def subscribe(self, *, name: str, tmdbid: int, type_: str,
                         season: Optional[int] = None) -> dict[str, Any]:
         body: dict[str, Any] = {"name": name, "tmdbid": tmdbid, "type": type_}

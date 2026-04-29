@@ -103,7 +103,7 @@
 
   <div class="input-card">
     <form id="submit-form">
-      <textarea name="text" id="input" placeholder="贴磁力链 (magnet:?xt=...) 或 .torrent URL 或媒体名 (《繁花》)" autofocus required></textarea>
+      <textarea name="text" id="input" placeholder="贴磁力链 / .torrent URL / 媒体名《繁花》 / TMDB ID (tmdb:762504) / TMDB 或豆瓣详情页 URL" autofocus required></textarea>
       <div class="controls">
         <button type="submit" id="submit-btn">提交</button>
         <button type="button" id="check-btn" style="background:transparent;color:var(--accent);border:1px solid var(--accent)">仅查重</button>
@@ -187,11 +187,18 @@ async function doSubmit(force = false) {
     result.innerHTML = msg;
 
     if (data.candidates && data.candidates.length) {
-      candEl.innerHTML = '<h3 style="font-size:14px; margin:12px 0 8px;">媒体搜索结果 — 选一个订阅:</h3>' +
+      const heading = data.kind === 'id_ref' ? '直接定位到的媒体:' : '媒体搜索结果 — 选一个订阅:';
+      candEl.innerHTML = '<h3 style="font-size:14px; margin:12px 0 8px;">' + heading + '</h3>' +
         data.candidates.map(c => renderCandidate(c)).join('');
       candEl.querySelectorAll('button[data-tmdbid]').forEach(b => {
         b.addEventListener('click', () => doSubscribe(b.dataset));
       });
+    } else if (data.hint) {
+      // 0 candidates with helper hint (Phase 1.5 fallback)
+      candEl.innerHTML = '<div style="margin-top:8px; padding:10px; background:rgba(112,112,112,0.12); border-radius:8px; font-size:13px; line-height:1.6;">' +
+        '<strong>没有找到候选 — 可以试试:</strong><br>' +
+        escape(data.hint).replace(/(\d+\))/g, '<br>$1') +
+        '</div>';
     } else {
       setTimeout(() => location.reload(), 1500);
     }

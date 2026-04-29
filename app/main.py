@@ -182,6 +182,8 @@ async def _dispatch(text: str, kind: str, hints: dict):
         return await _handle_jav(text, kind, hints)
     if kind in ("magnet", "torrent"):
         return await _handle_regular_magnet(text, kind, hints)
+    if kind == "id_ref":
+        return await _handle_id_ref(text, hints)
     if kind == "media_name":
         return await _handle_media_name(text, hints)
     if kind == "jav_code":
@@ -264,10 +266,47 @@ async def _handle_media_name(text: str, hints: dict) -> JSONResponse:
         state="search_done",
         mp_response={"candidates_count": len(candidates)},
     )
-    return JSONResponse({
+    payload: dict = {
         "task_id": tid,
         "kind": "media_name",
         "candidates": candidates[:10],
+    }
+    if not candidates:
+        payload["hint"] = (
+            "MoviePilot 没找到该标题。可以试试: "
+            "1) 英文/日文原名 (e.g. 'Nope' instead of '不'); "
+            "2) 直接贴 TMDB ID (e.g. 'tmdb:762504'); "
+            "3) 贴 TMDB 详情页 URL (e.g. 'https://www.themoviedb.org/movie/762504'); "
+            "4) 贴磁力链或 .torrent URL"
+        )
+    return JSONResponse(payload)
+
+
+async def _handle_id_ref(text: str, hints: dict) -> JSONResponse:
+    """User pasted tmdb:NNN / imdb tt-id / TMDB or Douban URL. Skip search."""
+    mp = MpClient()
+    detail = await mp.media_detail(
+        id_type=hints.get("id_type"),
+        id_value=hints.get("id_value"),
+        media_type=hints.get("media_type"),
+    )
+    if not detail:
+        tid = store.add(kind="id_ref", input_text=text, state="not_found",
+                        mp_response={"error": "media not found in MP/TMDB"})
+        return JSONResponse({
+            "task_id": tid,
+            "kind": "id_ref",
+            "candidates": [],
+            "hint": f"MoviePilot 找不到 {hints.get('id_type')}={hints.get('id_value')} 对应的媒体；可能 ID 错误或 TMDB 暂不可达",
+        })
+    tid = store.add(kind="id_ref", input_text=text, state="resolved",
+                    title=(detail.get("title") or detail.get("name") or "")[:200],
+                    mp_response={"resolved_to": detail.get("title")})
+    return JSONResponse({
+        "task_id": tid,
+        "kind": "id_ref",
+        "candidates": [detail],   # single high-confidence candidate, UI shows subscribe button
+        "message": f"已根据 {hints.get('id_type')}={hints.get('id_value')} 直接定位到媒体",
     })
 
 
