@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from . import cleanup, jav_search, merger, metrics as m, qc, store
+from . import cleanup, jav_search, merger, metrics as m, notify, qc, store
 from .config import settings
 from .exists import extract_code
 from .mdcx_runner import scrape_dir
@@ -162,6 +162,11 @@ async def _retry_with_next_candidate(
         m.QC_RETRY.labels(outcome="exhausted").inc()
         m.PIPELINE_RUN_TOTAL.labels(terminal_state="qc_failed_exhausted").inc()
         log.warning("[qc] task=%s code=%s exhausted retries: %s", tid, code, qc_reason)
+        await notify.notify(
+            "qc_failed_exhausted",
+            f"已重试 {attempts} 次仍 QC 失败，需要人工介入",
+            code=code, task=tid, reason=qc_reason,
+        )
         return False
 
     candidates = await jav_search.search_jav_code(code)
@@ -176,6 +181,11 @@ async def _retry_with_next_candidate(
         m.QC_RETRY.labels(outcome="no_alt").inc()
         m.PIPELINE_RUN_TOTAL.labels(terminal_state="qc_failed_no_alt").inc()
         log.warning("[qc] task=%s code=%s no alt candidate: %s", tid, code, qc_reason)
+        await notify.notify(
+            "qc_failed_no_alt",
+            f"QC 失败但 sukebei 没有其他候选可用",
+            code=code, task=tid, reason=qc_reason,
+        )
         return False
 
     # Record the new hash as tried before adding (so the watcher won't re-pick
@@ -271,6 +281,11 @@ async def _process_done(qbt: QbtClient, t: dict) -> None:
     if not ok:
         store.update(tid, state="pre_mdcx_failed", error=note)
         m.PIPELINE_RUN_TOTAL.labels(terminal_state="pre_mdcx_failed").inc()
+        await notify.notify(
+            "pre_mdcx_failed",
+            "下载完成但 pre-mdcx 流水线失败（disc remux 等步骤）",
+            task=tid, name=t.get("name", "")[:80], reason=note,
+        )
         return
 
     # Step 6: QC
@@ -294,6 +309,11 @@ async def _process_done(qbt: QbtClient, t: dict) -> None:
             )
             m.QC_RETRY.labels(outcome="no_code").inc()
             m.PIPELINE_RUN_TOTAL.labels(terminal_state="qc_failed_no_code").inc()
+            await notify.notify(
+                "qc_failed_no_code",
+                "QC 失败但无法从种子名提取番号，无法自动重试",
+                task=tid, name=t.get("name", "")[:80], reason=qc_result.reason,
+            )
         return
 
     m.PIPELINE_STEP_TOTAL.labels(step="qc", outcome="ok").inc()
@@ -320,6 +340,11 @@ async def _process_done(qbt: QbtClient, t: dict) -> None:
         store.update(tid, state="scraped", mdcx_result=merged_result)
         m.PIPELINE_RUN_TOTAL.labels(terminal_state="scraped").inc()
         log.info("[scrape] task=%s OK (post-cleanup deleted %d)", tid, len(post_logs))
+        await notify.notify(
+            "scraped",
+            "刮削完成 ✅",
+            task=tid, name=t.get("name", "")[:80], path=target,
+        )
     else:
         # Distinguish timeout (rc=-1 + "timed out" stderr) from generic fail.
         is_timeout = result["rc"] == -1 and "timed out" in (result.get("stderr") or "")
@@ -331,6 +356,12 @@ async def _process_done(qbt: QbtClient, t: dict) -> None:
             error=(result.get("stderr") or "")[:1000],
         )
         log.error("[scrape] task=%s FAILED rc=%s", tid, result["rc"])
+        await notify.notify(
+            "scrape_failed",
+            f"mdcx 刮削失败 (rc={result['rc']}{'/timeout' if is_timeout else ''})",
+            task=tid, name=t.get("name", "")[:80],
+            stderr=(result.get("stderr") or "")[:200],
+        )
 
 
 # ---------------------------------------------------------------------------

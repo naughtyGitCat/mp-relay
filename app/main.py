@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from . import metrics as m
+from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
@@ -102,10 +103,12 @@ async def index(request: Request):
 
 @app.get("/health")
 async def health():
-    err = await mdcx_healthcheck()
+    mdcx_err = await mdcx_healthcheck()
+    tg_err = await notify.healthcheck()
     return {
-        "ok": err is None,
-        "mdcx": "ok" if err is None else err,
+        "ok": mdcx_err is None,
+        "mdcx": "ok" if mdcx_err is None else mdcx_err,
+        "telegram": "ok" if tg_err is None else tg_err,
     }
 
 
