@@ -254,3 +254,87 @@ def test_info_hash_from_magnet():
     assert _info_hash_from_magnet("magnet:?xt=urn:btih:abc123") == "abc123"
     assert _info_hash_from_magnet("magnet:?xt=urn:btih:ABC123") == "abc123"  # lowered
     assert _info_hash_from_magnet("not a magnet") is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.7: search_keyword (free-text, sukebei-only, no strict code filter)
+# ---------------------------------------------------------------------------
+
+def test_search_keyword_empty_input():
+    from app.jav_search import search_keyword
+    import asyncio
+    assert asyncio.run(search_keyword("")) == []
+    assert asyncio.run(search_keyword("   ")) == []
+
+
+def test_search_keyword_skips_strict_code_filter(monkeypatch):
+    """Free-text searches must NOT apply the code-norm-in-title filter that
+    search_jav_code uses, otherwise JP titles would get filtered out."""
+    import asyncio
+    from app import jav_search
+
+    # Mock _fetch_sukebei to return one candidate whose title doesn't contain
+    # the keyword as a substring — search_jav_code would reject this, but
+    # search_keyword should keep it (sukebei's own search already vetted it).
+    fake_results = [{
+        "title": "Some Random Title",
+        "info_hash": "a" * 40,
+        "magnet": "magnet:?xt=urn:btih:" + "a" * 40,
+        "seeders": 5,
+        "leechers": 0,
+        "downloads": 10,
+        "size_str": "1.4 GiB",
+        "size_mib": 1400.0,
+        "quality_score": 3,
+        "suspicion_score": 0,
+        "has_chinese_subs": False,
+        "view_url": "x",
+        "pub_date": "x",
+        "source": "sukebei",
+    }]
+
+    async def fake_fetch(code):
+        return fake_results
+
+    monkeypatch.setattr(jav_search, "_fetch_sukebei", fake_fetch)
+    out = asyncio.run(jav_search.search_keyword("漆黒のシャガ"))
+    # No filter applied → the candidate survives even though title doesn't match
+    assert len(out) == 1
+    assert out[0]["info_hash"] == "a" * 40
+
+
+def test_search_keyword_ranks_candidates(monkeypatch):
+    """Candidates should still be sorted by the standard rank order."""
+    import asyncio
+    from app import jav_search
+
+    async def fake_fetch(code):
+        return [
+            _make_stub_candidate("a", quality=2, seeders=100),   # HD high seeds
+            _make_stub_candidate("b", quality=4, seeders=5),     # 4K low seeds
+            _make_stub_candidate("c", quality=3, seeders=50),    # FHD mid
+        ]
+
+    monkeypatch.setattr(jav_search, "_fetch_sukebei", fake_fetch)
+    out = asyncio.run(jav_search.search_keyword("anything"))
+    # Quality wins over seeders → 4K(b) > FHD(c) > HD(a)
+    assert [c["info_hash"] for c in out] == ["b" * 40, "c" * 40, "a" * 40]
+
+
+def _make_stub_candidate(letter: str, *, quality: int, seeders: int) -> dict:
+    return {
+        "title": f"Title-{letter}",
+        "info_hash": letter * 40,
+        "magnet": f"magnet:?xt=urn:btih:{letter * 40}",
+        "seeders": seeders,
+        "leechers": 0,
+        "downloads": 0,
+        "size_str": "1 GiB",
+        "size_mib": 1024.0,
+        "quality_score": quality,
+        "suspicion_score": 0,
+        "has_chinese_subs": False,
+        "view_url": "",
+        "pub_date": "",
+        "source": "sukebei",
+    }

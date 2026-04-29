@@ -653,6 +653,33 @@ async def search_jav_code(code: str, *, limit: int = 30,
     return candidates[:limit]
 
 
+async def search_keyword(keyword: str, *, limit: int = 30) -> list[dict]:
+    """Free-text magnet search — for cases where the user has a Japanese title
+    (e.g. from a Bangumi match) but no JAV code.
+
+    Only sukebei is queried — JavBus / JavDB / MissAV all fetch by exact code
+    URL (e.g. /SSIS-001) so they can't search arbitrary text.
+
+    Skips the strict ``code in title`` filter that ``search_jav_code`` applies,
+    because for free-text we want broader recall (sukebei's own search already
+    does fuzzy matching on the keyword).
+
+    No SQLite cache — caller is expected to drive this from a button click,
+    not a hot path. (We could add a separate cache table later if it shows up
+    as a perf issue.)
+    """
+    keyword = keyword.strip()
+    if not keyword:
+        return []
+
+    # Reuse the sukebei fetcher with the keyword in place of a code. The
+    # underlying RSS endpoint accepts any free-text in ?q= so this works
+    # for JP titles, English titles, mixed, etc.
+    candidates = await _fetch_sukebei(keyword)
+    candidates.sort(key=_rank_key)
+    return candidates[:limit]
+
+
 def best_candidate(candidates: list[dict], *,
                    exclude_hashes: Optional[set[str]] = None) -> Optional[dict]:
     """Pick the single best candidate for batch operations.
