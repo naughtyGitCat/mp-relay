@@ -7,9 +7,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from . import metrics as m
 from . import store
 from .classifier import classify
 from .config import settings
@@ -107,6 +109,12 @@ async def health():
     }
 
 
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus scrape endpoint. Served from the default global registry."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 # ============================================================
 # Submit
 # ============================================================
@@ -161,6 +169,7 @@ async def submit(
     if has_dup and not force and kind in (
         "jav_magnet", "jav_torrent", "magnet", "torrent"
     ):
+        m.SUBMIT_TOTAL.labels(kind=kind, result="duplicate").inc()
         return JSONResponse(
             status_code=409,
             content={
@@ -173,7 +182,12 @@ async def submit(
         )
 
     # Normal dispatch — handler returns its own JSONResponse / dict.
-    handler_resp = await _dispatch(text, kind, hints)
+    try:
+        handler_resp = await _dispatch(text, kind, hints)
+    except Exception:
+        m.SUBMIT_TOTAL.labels(kind=kind, result="error").inc()
+        raise
+    m.SUBMIT_TOTAL.labels(kind=kind, result="accepted").inc()
 
     # Annotate response with existence info so UI can show warning even on 200.
     return _attach_existence(handler_resp, existence)
