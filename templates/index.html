@@ -85,9 +85,30 @@
     .state-mp_rejected { background: rgba(248, 81, 73, 0.15); color: var(--error); }
     .state-submitted_to_mp { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
     .state-search_done { background: rgba(112, 112, 112, 0.2); color: var(--muted); }
+    .state-search_empty { background: rgba(112, 112, 112, 0.2); color: var(--muted); }
     .state-subscribed { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
+    .state-processing { background: rgba(74, 158, 255, 0.2); color: var(--accent); }
+    .state-pre_mdcx_failed,
+    .state-qc_failed,
+    .state-qc_failed_exhausted,
+    .state-qc_failed_no_alt,
+    .state-qc_failed_no_code { background: rgba(248, 81, 73, 0.15); color: var(--error); }
+    .state-qc_failed_retried { background: rgba(255, 165, 0, 0.2); color: orange; }
+    .state-queued { background: rgba(112, 112, 112, 0.2); color: var(--muted); }
     .truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ts { color: var(--muted); font-size: 11px; }
+    /* Brief flash when a task's state changes */
+    @keyframes row-flash {
+      0%   { background: rgba(74, 158, 255, 0.25); }
+      100% { background: transparent; }
+    }
+    tr.flashed { animation: row-flash 1.6s ease-out; }
+    .notes { color: var(--muted); font-size: 11px; margin-top: 3px;
+             white-space: pre-wrap; max-width: 480px; }
+    .live-dot { display:inline-block; width:6px; height:6px; border-radius:50%;
+                background: var(--ok); margin-right:6px; vertical-align:middle;
+                animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
     @media (max-width: 600px) {
       .truncate { max-width: 160px; }
@@ -114,7 +135,7 @@
     <div id="candidates" class="candidates"></div>
   </div>
 
-  <h2>最近任务</h2>
+  <h2><span class="live-dot" title="自动刷新中"></span>最近任务 <span id="task-pulse" style="color:var(--muted);font-size:12px;font-weight:normal"></span></h2>
   <table>
     <thead>
       <tr>
@@ -125,9 +146,9 @@
         <th class="hide-mobile">详情</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="tasks-tbody">
       {% for t in tasks %}
-      <tr>
+      <tr data-tid="{{ t.id }}" data-state="{{ t.state }}">
         <td class="ts">{{ t.created_ts_fmt }}</td>
         <td>{{ t.kind }}</td>
         <td class="truncate" title="{{ t.title or t.input_text }}">{{ t.title or t.input_text }}</td>
@@ -135,7 +156,7 @@
         <td class="hide-mobile truncate">{% if t.error %}<span style="color: var(--error)">{{ t.error[:60] }}</span>{% elif t.save_path %}{{ t.save_path }}{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="5" style="color: var(--muted); padding: 24px 0; text-align: center;">还没有提交记录</td></tr>
+      <tr id="empty-row"><td colspan="5" style="color: var(--muted); padding: 24px 0; text-align: center;">还没有提交记录</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -355,6 +376,121 @@ async function doSubscribe(d) {
 function escape(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// ============================================================
+// Live task polling — refresh the tasks table every 10s, flash
+// rows whose state changed since the previous poll.
+// ============================================================
+
+const POLL_INTERVAL_MS = 10_000;
+let lastStates = new Map();          // tid → state from previous poll
+let pollTimer = null;
+const pulseEl = document.getElementById('task-pulse');
+
+function fmtTs(epoch) {
+  const d = new Date(epoch * 1000);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${mm}-${dd} ${hh}:${mi}`;
+}
+
+function extractNotes(t) {
+  // mdcx_result is stored as a JSON string in SQLite. The watcher writes
+  // pre_mdcx_notes (triage / merge / remux narration) and a post_mdcx
+  // cleanup log. Show them inline so users can see what the pipeline did.
+  if (!t.mdcx_result) return '';
+  let r;
+  try { r = typeof t.mdcx_result === 'string' ? JSON.parse(t.mdcx_result) : t.mdcx_result; }
+  catch { return ''; }
+  const notes = (r.pre_mdcx_notes || []).slice(-3);     // last 3 stages most informative
+  const post = (r.post_mdcx || []).filter(l => l.startsWith('DELETE')).length;
+  const out = [];
+  if (notes.length) out.push(notes.join(' · '));
+  if (post) out.push(`post-mdcx: 删除 ${post} 个垃圾文件`);
+  return out.join('\n');
+}
+
+function renderTaskRow(t) {
+  const tr = document.createElement('tr');
+  tr.dataset.tid = t.id;
+  tr.dataset.state = t.state;
+
+  const titleOrInput = t.title || t.input_text || '';
+  const detailHtml = t.error
+    ? `<span style="color: var(--error)">${escape(t.error.slice(0, 60))}</span>`
+    : (t.save_path ? escape(t.save_path) : '');
+  const notes = extractNotes(t);
+
+  tr.innerHTML =
+    `<td class="ts">${escape(fmtTs(t.created_at))}</td>` +
+    `<td>${escape(t.kind)}</td>` +
+    `<td class="truncate" title="${escape(titleOrInput)}">${escape(titleOrInput)}</td>` +
+    `<td><span class="state state-${escape(t.state)}">${escape(t.state)}</span></td>` +
+    `<td class="hide-mobile truncate">${detailHtml}` +
+      (notes ? `<div class="notes">${escape(notes)}</div>` : '') +
+    `</td>`;
+  return tr;
+}
+
+async function refreshTasks() {
+  let tasks;
+  try {
+    const r = await fetch('/tasks?limit=50');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    tasks = await r.json();
+  } catch (e) {
+    pulseEl.textContent = `(刷新失败: ${e.message})`;
+    return;
+  }
+
+  const tbody = document.getElementById('tasks-tbody');
+  const newStates = new Map();
+  const frag = document.createDocumentFragment();
+
+  for (const t of tasks) {
+    newStates.set(t.id, t.state);
+    const tr = renderTaskRow(t);
+    const prev = lastStates.get(t.id);
+    if (prev !== undefined && prev !== t.state) {
+      // State changed since last poll — flash it.
+      tr.classList.add('flashed');
+    }
+    frag.appendChild(tr);
+  }
+
+  if (tasks.length === 0) {
+    tbody.innerHTML = '<tr id="empty-row"><td colspan="5" style="color: var(--muted); padding: 24px 0; text-align: center;">还没有提交记录</td></tr>';
+  } else {
+    tbody.replaceChildren(frag);
+  }
+
+  lastStates = newStates;
+  pulseEl.textContent = `(${tasks.length} 条 · 上次刷新 ${new Date().toLocaleTimeString('zh-CN', {hour12:false})})`;
+}
+
+// Seed lastStates from the server-rendered table so the first poll doesn't
+// flash every row.
+document.querySelectorAll('#tasks-tbody tr[data-tid]').forEach(tr => {
+  lastStates.set(tr.dataset.tid, tr.dataset.state);
+});
+
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(refreshTasks, POLL_INTERVAL_MS);
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// Pause polling when the tab is hidden — saves bandwidth + CPU on .13.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopPolling();
+  else { refreshTasks(); startPolling(); }
+});
+
+startPolling();
 </script>
 </body>
 </html>
