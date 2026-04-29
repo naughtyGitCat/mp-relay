@@ -37,6 +37,13 @@ def _format_ts(epoch: int | float) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .config import validate as validate_settings
+    issues = validate_settings()
+    if issues:
+        for msg in issues:
+            log.error("CONFIG: %s", msg)
+        log.error("Fix .env and restart. Service will start but most operations will fail.")
+
     store.init()
     log.info("DB initialised at %s", settings.state_db)
 

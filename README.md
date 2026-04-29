@@ -24,7 +24,7 @@
                                   → E:\Jav_failed (失败)
 ```
 
-跑在 Windows 媒体服务器 `10.100.100.13`，单页 Web UI 监听 `:5000`。
+跑在 Windows 媒体服务器（与 MoviePilot / qBittorrent / mdcx 同机），单页 Web UI 监听 `:5000`。
 
 ## 设计目标
 
@@ -61,20 +61,27 @@
 复制 `.env.example` 到 `.env`，关键字段：
 
 ```ini
-MP_URL=http://10.100.100.13:3000
+MP_URL=http://localhost:3000
 MP_USER=admin
-MP_PASS=sa123456
+MP_PASS=change-me
 
-QBT_URL=http://127.0.0.1:8080
+QBT_URL=http://localhost:8080
 QBT_USER=admin
-QBT_PASS=123456
+QBT_PASS=change-me
 QBT_JAV_CATEGORY=JAV
 QBT_JAV_SAVEPATH=G:\Downloads\JAV-staging
 
+# mdcx fork that exposes a CLI entry point (`mdcx.cmd.main`):
+# https://github.com/sqzw-x/mdcx — base project (GUI-first)
+# https://github.com/naughtyGitCat/mdcx — fork that adds the CLI
 MDCX_DIR=E:\mdcx-src
 MDCX_PYTHON=E:\mdcx-src\.venv\Scripts\python.exe
 MDCX_MODULE=mdcx.cmd.main
 ```
+
+> ⚠ **Personal-use tool.** Designed for my homelab; defaults assume a single-user
+> Windows machine on a trusted LAN. Do not expose `:5000` to the internet —
+> there is no auth on mp-relay itself, and it can add arbitrary downloads.
 
 ## 部署
 

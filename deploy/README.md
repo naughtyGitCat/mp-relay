@@ -1,6 +1,8 @@
-# Deploy mp-relay on the Windows host
+# Deploy mp-relay on a Windows host
 
-Target: `10.100.100.13` (Windows). Service runs alongside MoviePilot, qBittorrent, mdcx.
+Target: a Windows machine running MoviePilot + qBittorrent + mdcx (the fork at `E:\mdcx-src`).
+Replace `<HOST>` with your machine's IP/hostname and `<USER>` with the SSH login user
+in the commands below.
 
 ## Layout on the Windows side
 
@@ -20,10 +22,10 @@ The script `deploy/install-on-windows.ps1` does all of this in one go. From your
 
 ```bash
 # 1. scp the project
-scp -r ~/github/mp-relay the2n@10.100.100.13:C:/mp-relay-tmp
+scp -r ~/github/mp-relay <USER>@<HOST>:C:/mp-relay-tmp
 
 # 2. run the install script remotely
-ssh the2n@10.100.100.13 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\mp-relay-tmp\deploy\install-on-windows.ps1 -Source C:\mp-relay-tmp -Target C:\mp-relay'
+ssh <USER>@<HOST> 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\mp-relay-tmp\deploy\install-on-windows.ps1 -Source C:\mp-relay-tmp -Target C:\mp-relay'
 ```
 
 What it does:
@@ -51,7 +53,7 @@ notepad .env   # fill in passwords
 
 # Test run (foreground)
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 5000
-# → browser hits http://10.100.100.13:5000
+# → browser hits http://<HOST>:5000
 
 # Install as service (reuse nssm.exe from MoviePilot install)
 $nssm = "C:\Program Files (x86)\MoviePilot\nssm.exe"
@@ -75,8 +77,8 @@ $python = "C:\mp-relay\.venv\Scripts\python.exe"
 ```bash
 # from dev machine
 rsync -av --delete --exclude=.venv --exclude=state.db --exclude=.env \
-  ~/github/mp-relay/ the2n@10.100.100.13:C:/mp-relay/
-ssh the2n@10.100.100.13 'powershell -Command "Restart-Service mp-relay"'
+  ~/github/mp-relay/ <USER>@<HOST>:C:/mp-relay/
+ssh <USER>@<HOST> 'powershell -Command "Restart-Service mp-relay"'
 ```
 
 ## Uninstall

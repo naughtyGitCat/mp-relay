@@ -8,15 +8,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # --- MoviePilot (home instance — for non-JAV media) ---
-    mp_url: str = "http://10.100.100.13:3000"
+    # --- MoviePilot (regular media dispatcher) ---
+    mp_url: str = "http://localhost:3000"
     mp_user: str = "admin"
-    mp_pass: str = "sa123456"
+    mp_pass: str = ""           # required at runtime; raise on startup if empty
 
-    # --- qBittorrent WebUI (local on .13) ---
-    qbt_url: str = "http://127.0.0.1:8080"
+    # --- qBittorrent WebUI (must be reachable from where mp-relay runs) ---
+    qbt_url: str = "http://localhost:8080"
     qbt_user: str = "admin"
-    qbt_pass: str = "123456"
+    qbt_pass: str = ""          # required at runtime
 
     # --- JAV path ---
     qbt_jav_category: str = "JAV"
@@ -46,3 +46,13 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def validate() -> list[str]:
+    """Return a list of misconfiguration messages; empty if OK."""
+    issues: list[str] = []
+    if not settings.mp_pass:
+        issues.append("MP_PASS is empty — set it in .env (the home MoviePilot admin password)")
+    if not settings.qbt_pass:
+        issues.append("QBT_PASS is empty — set it in .env (the qBittorrent WebUI password)")
+    return issues
