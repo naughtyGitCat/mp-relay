@@ -115,7 +115,7 @@ def test_metrics_endpoint_renders():
         QC_RESULT, MDCX_RUN, FILES_DELETED,
     )
     SUBMIT_TOTAL.labels(kind="jav_code", result="accepted").inc()
-    JAV_SEARCH_TOTAL.labels(result="hit").inc()
+    JAV_SEARCH_TOTAL.labels(source="sukebei", result="hit").inc()
     PIPELINE_RUN_TOTAL.labels(terminal_state="scraped").inc()
     QC_RESULT.labels(result="pass", reason_class="ok").inc()
     MDCX_RUN.labels(result="ok").inc()
