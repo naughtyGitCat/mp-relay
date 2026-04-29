@@ -85,3 +85,52 @@ def test_annotate_owned_with_explicit_set():
     assert out[0]["owned"] is True
     assert out[1]["owned"] is True   # case insensitive via normalisation
     assert out[2]["owned"] is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c — series / studio / genre URL parsing
+# ---------------------------------------------------------------------------
+
+def test_parse_javbus_url_series():
+    from app.discover import parse_javbus_url
+    assert parse_javbus_url("https://www.javbus.com/series/RPC") == ("series", "RPC")
+
+
+def test_parse_javbus_url_studio():
+    from app.discover import parse_javbus_url
+    assert parse_javbus_url("/studio/5XS") == ("studio", "5XS")
+
+
+def test_parse_javbus_url_genre():
+    from app.discover import parse_javbus_url
+    assert parse_javbus_url("https://www.javbus.com/genre/d4") == ("genre", "d4")
+
+
+def test_parse_javbus_url_director():
+    from app.discover import parse_javbus_url
+    assert parse_javbus_url("/director/abc123") == ("director", "abc123")
+
+
+def test_parse_javbus_url_with_page_suffix():
+    from app.discover import parse_javbus_url
+    # URL with /page suffix should still extract correctly
+    assert parse_javbus_url("https://www.javbus.com/series/RPC/2") == ("series", "RPC")
+
+
+def test_parse_javbus_url_invalid():
+    from app.discover import parse_javbus_url
+    assert parse_javbus_url("") is None
+    assert parse_javbus_url("https://example.com/foo") is None
+    assert parse_javbus_url("/unknown_kind/123") is None
+
+
+def test_films_by_kind_invalid_kind():
+    from app.discover import films_by_kind
+    import asyncio
+    import pytest
+    # Not exercising the actual fetch — just the kind validator
+    try:
+        asyncio.run(films_by_kind("nonsense", "abc"))
+        assert False, "should have raised ValueError"
+    except ValueError as e:
+        assert "unknown kind" in str(e).lower()

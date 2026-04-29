@@ -484,6 +484,40 @@ async def api_bulk_subscribe(codes_csv: str = Form(...)):
     return {"total": len(codes), "ok": ok_count, "failed": len(codes) - ok_count, "results": results}
 
 
+@app.get("/api/discover/films")
+async def api_discover_films(kind: str = "", id: str = "", url: str = "",
+                              refresh: bool = False):
+    """Phase 2c — list films for a series / studio / genre / director / actor.
+
+    Caller supplies either:
+      - kind + id  (e.g. kind=series, id=RPC), OR
+      - url        (a JavBus URL we'll parse — paste-friendly)
+    """
+    # Allow URL paste shortcut
+    if url and not (kind and id):
+        parsed = discover.parse_javbus_url(url)
+        if parsed is None:
+            return JSONResponse({"error": "could not parse JavBus URL"}, status_code=400)
+        kind, id = parsed
+
+    if not kind or not id:
+        return JSONResponse({"error": "kind+id (or url) required"}, status_code=400)
+
+    try:
+        films = await discover.films_by_kind(kind, id, force_refresh=refresh)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    discover.annotate_owned(films)
+    owned_count = sum(1 for f in films if f.get("owned"))
+    return JSONResponse({
+        "kind": kind,
+        "id": id,
+        "films": films,
+        "total": len(films),
+        "owned_count": owned_count,
+    })
+
+
 @app.get("/api/discover/actor")
 async def api_discover_actor(name: str = "", actor_id: str = "",
                               refresh: bool = False):
