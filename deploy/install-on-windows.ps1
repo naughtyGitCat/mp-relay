@@ -106,8 +106,7 @@ if (-not (Test-Path $Nssm)) {
     throw "nssm.exe not found at $Nssm. Pass -Nssm explicitly."
 }
 
-$svcStatus = & $Nssm status $ServiceName 2>&1
-if ($svcStatus -match "SERVICE_") {
+if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
     Write-Host "Stopping existing service"
     & $Nssm stop $ServiceName 2>&1 | Out-Null
     Start-Sleep 2

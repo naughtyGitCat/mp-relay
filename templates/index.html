@@ -127,7 +127,7 @@
     <tbody>
       {% for t in tasks %}
       <tr>
-        <td class="ts">{{ t.created_at | int | format_ts }}</td>
+        <td class="ts">{{ t.created_ts_fmt }}</td>
         <td>{{ t.kind }}</td>
         <td class="truncate" title="{{ t.title or t.input_text }}">{{ t.title or t.input_text }}</td>
         <td><span class="state state-{{ t.state }}">{{ t.state }}</span></td>

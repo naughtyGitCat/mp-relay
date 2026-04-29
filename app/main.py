@@ -34,9 +34,6 @@ def _format_ts(epoch: int | float) -> str:
     return dt.datetime.fromtimestamp(int(epoch)).strftime("%m-%d %H:%M")
 
 
-templates.env.filters["format_ts"] = _format_ts
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store.init()
@@ -81,9 +78,13 @@ app = FastAPI(title="mp-relay", lifespan=lifespan)
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     tasks = store.list_recent(limit=50)
+    # Pre-format timestamps Python-side; avoids Jinja2 env-filter cache quirks.
+    for t in tasks:
+        t["created_ts_fmt"] = _format_ts(t["created_at"])
     return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "tasks": tasks, "settings": settings},
+        request=request,
+        name="index.html",
+        context={"tasks": tasks, "settings": settings},
     )
 
 
