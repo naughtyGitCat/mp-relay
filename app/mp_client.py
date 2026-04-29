@@ -85,10 +85,15 @@ class MpClient:
         """Fetch a single media item by external ID.
 
         id_type: tmdbid / imdbid / doubanid / bangumiid
-        media_type: 'movie' | 'tv' — required only for tmdbid in some MP versions.
+        media_type: 'movie' | 'tv' (English; converted to MP's required Chinese values).
+            If None for tmdb/imdb, try '电影' first then '电视剧'.
         Returns None if not found.
+
+        MP's /api/v1/media/{mediaid} requires `type_name` query param in Chinese,
+        and accepts mediaid prefixes tmdb: / douban: / bangumi:. IMDB is not directly
+        supported — falls through to a "RecognizeConvertEvent" plugin path that may
+        or may not be wired up; we still try.
         """
-        # MP's `/api/v1/media/{mediaid}` accepts mediaid in form `tmdb:123` / `douban:123`.
         prefix_map = {
             "tmdbid": "tmdb",
             "doubanid": "douban",
@@ -99,16 +104,30 @@ class MpClient:
         if not prefix:
             return None
         mediaid = f"{prefix}:{id_value}"
-        params: dict[str, str] = {}
-        if media_type and prefix == "tmdb":
-            params["type_name"] = media_type
-        r = await self.request("GET", f"/api/v1/media/{mediaid}", params=params)
-        if r.status_code != 200:
-            return None
-        try:
-            return r.json()
-        except Exception:
-            return None
+
+        # Convert English media_type → MP's Chinese values
+        if media_type == "movie":
+            type_names = ["电影"]
+        elif media_type == "tv":
+            type_names = ["电视剧"]
+        else:
+            type_names = ["电影", "电视剧"]  # try both
+
+        for type_name in type_names:
+            r = await self.request(
+                "GET", f"/api/v1/media/{mediaid}",
+                params={"type_name": type_name},
+            )
+            if r.status_code != 200:
+                continue
+            try:
+                data = r.json()
+            except Exception:
+                continue
+            # MP returns 200 with empty object when not found in that type; verify a real hit.
+            if isinstance(data, dict) and (data.get("title") or data.get("tmdb_id") or data.get("name")):
+                return data
+        return None
 
     async def subscribe(self, *, name: str, tmdbid: int, type_: str,
                         season: Optional[int] = None) -> dict[str, Any]:
