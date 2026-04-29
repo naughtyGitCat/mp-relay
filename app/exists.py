@@ -37,12 +37,14 @@ def extract_code(text: str) -> Optional[str]:
             # Normalise: collapse any internal whitespace/underscores to single dash where appropriate.
             # FC2/HEYZO/numeric series keep their natural separators; lettered codes get dashed.
             if raw.startswith("FC2"):
-                # Force "FC2-PPV-1234567"
-                digits = re.search(r"\d+", raw).group()
-                return f"FC2-PPV-{digits}"
+                # Force "FC2-PPV-1234567" — match the FC2 movie id (6+ digits)
+                m2 = re.search(r"\d{6,}", raw)
+                if m2:
+                    return f"FC2-PPV-{m2.group()}"
             if raw.startswith("HEYZO"):
-                digits = re.search(r"\d+", raw).group()
-                return f"HEYZO-{digits}"
+                m2 = re.search(r"\d{4,}", raw)
+                if m2:
+                    return f"HEYZO-{m2.group()}"
             return raw  # "SSIS-001" or "SSIS001"
     return None
 
