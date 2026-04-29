@@ -16,7 +16,7 @@ from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import discover, gfriends, jav_search
+from . import discover, gfriends, jav_search, media_fallback
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -297,23 +297,53 @@ async def _handle_regular_magnet(text: str, kind: str, hints: dict) -> JSONRespo
 
 
 async def _handle_media_name(text: str, hints: dict) -> JSONResponse:
-    """Search MoviePilot for the title; return candidates for the user to pick."""
+    """Search MoviePilot for the title; return candidates for the user to pick.
+
+    Phase 1.5 fallback: when MP returns zero candidates, ask AniList for
+    alternate titles (English / romaji / native / synonyms) and re-search MP
+    with each. Useful for Chinese fan-translations TMDB doesn't index.
+    """
     mp = MpClient()
     candidates = await mp.search_media(text)
+
+    fallback_used: list[dict] = []
+    if not candidates:
+        alts = await media_fallback.alternate_titles_anilist(text, limit=5)
+        for alt in alts:
+            try:
+                alt_candidates = await mp.search_media(alt["title"])
+            except Exception as e:
+                log.warning("media_fallback re-search failed for %s: %s", alt["title"], e)
+                continue
+            if alt_candidates:
+                # Tag each candidate with how we found it so UI can show the path.
+                for c in alt_candidates:
+                    c.setdefault("_via", alt["via"])
+                    c.setdefault("_alt_title", alt["title"])
+                candidates.extend(alt_candidates)
+                fallback_used.append({"title": alt["title"], "via": alt["via"], "found": len(alt_candidates)})
+            if len(candidates) >= 10:
+                break
+
     tid = store.add(
         kind="media_name",
         input_text=text,
-        state="search_done",
-        mp_response={"candidates_count": len(candidates)},
+        state="search_done" if candidates else "search_empty",
+        mp_response={
+            "candidates_count": len(candidates),
+            "fallback_used": fallback_used,
+        },
     )
     payload: dict = {
         "task_id": tid,
         "kind": "media_name",
         "candidates": candidates[:10],
     }
+    if fallback_used:
+        payload["fallback_used"] = fallback_used
     if not candidates:
         payload["hint"] = (
-            "MoviePilot 没找到该标题。可以试试: "
+            "MoviePilot 和 AniList fallback 都没找到。可以试试: "
             "1) 英文/日文原名 (e.g. 'Nope' instead of '不'); "
             "2) 直接贴 TMDB ID (e.g. 'tmdb:762504'); "
             "3) 贴 TMDB 详情页 URL (e.g. 'https://www.themoviedb.org/movie/762504'); "
