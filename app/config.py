@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     # gives qBT time to finalize file moves and Windows to release file locks.
     mdcx_settle_sec: int = 30
 
+    # Pre-mdcx: merge multi-part releases (CD1+CD2 / Part1+Part2 / A+B+C) into a
+    # single file via ffmpeg concat demuxer. Lossless when codecs match; falls
+    # back to Jellyfin-friendly multi-file naming if codecs differ.
+    merge_multipart: bool = True
+
+    # Pre-mdcx: detect BDMV/VIDEO_TS folders and remux the main playlist into a
+    # single .mkv (compatible with Jellyfin/Emby/mdcx, no re-encode).
+    remux_disc_archives: bool = True
+
+    # QC retry: on failed quality-check, swap to the next-best candidate up to
+    # this many attempts before giving up.
+    qc_max_retries: int = 3
+
 
 settings = Settings()
 

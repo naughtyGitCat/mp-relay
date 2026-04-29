@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
         log.error("Fix .env and restart. Service will start but most operations will fail.")
 
     store.init()
+    store.init_retry_state()
     log.info("DB initialised at %s", settings.state_db)
 
     # Ensure qBT JAV category exists

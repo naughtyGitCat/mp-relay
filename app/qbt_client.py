@@ -99,6 +99,18 @@ class QbtClient:
                 return t
         return None
 
+    async def delete(self, torrent_hash: str, *, delete_files: bool = True) -> None:
+        """Remove a torrent from qBT. Used by retry chain when QC fails."""
+        r = await self._request(
+            "POST", "/api/v2/torrents/delete",
+            data={
+                "hashes": torrent_hash,
+                "deleteFiles": "true" if delete_files else "false",
+            },
+        )
+        r.raise_for_status()
+        log.info("qBT delete %s (delete_files=%s)", torrent_hash[:8], delete_files)
+
     async def close(self) -> None:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
