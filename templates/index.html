@@ -207,6 +207,19 @@ async function doSubmit(force = false) {
     }
     result.innerHTML = msg;
 
+    // Phase 1.6: render Bangumi match banner BEFORE candidates so the user sees
+    // the canonical work even when MP/TMDB returns nothing or fuzzy noise.
+    let bangumiHtml = '';
+    if (data.bangumi_match) {
+      const bm = data.bangumi_match;
+      bangumiHtml = `<div style="margin:12px 0; padding:10px 12px; background:rgba(74,158,255,0.08); border-left:3px solid var(--accent); border-radius:4px; font-size:13px;">
+        <strong>📚 Bangumi 找到了:</strong>
+        <a href="${escape(bm.url)}" target="_blank" rel="noopener" style="margin-left:6px;">${escape(bm.name || '')}</a>
+        ${bm.name_cn ? `<span style="color:var(--muted)"> · ${escape(bm.name_cn)}</span>` : ''}
+        <span style="color:var(--muted); font-size:11px; margin-left:6px;">#${escape(String(bm.id))}</span>
+      </div>`;
+    }
+
     if (data.candidates && data.candidates.length) {
       // JAV candidates from Phase 1 (sukebei magnet search)
       if (data.kind === 'jav_code') {
@@ -217,19 +230,28 @@ async function doSubmit(force = false) {
           b.addEventListener('click', () => doJavAdd(b.dataset));
         });
       } else {
-        const heading = data.kind === 'id_ref' ? '直接定位到的媒体:' : '媒体搜索结果 — 选一个订阅:';
-        candEl.innerHTML = '<h3 style="font-size:14px; margin:12px 0 8px;">' + heading + '</h3>' +
+        const heading = data.kind === 'id_ref'
+          ? '直接定位到的媒体:'
+          : (data.fallback_used && data.fallback_used.length
+              ? `媒体搜索结果（通过 ${escape(data.fallback_used[0].via)} 别名）— 部分可能是无关同名作品，请核对:`
+              : '媒体搜索结果 — 选一个订阅:');
+        candEl.innerHTML = bangumiHtml +
+          '<h3 style="font-size:14px; margin:12px 0 8px;">' + heading + '</h3>' +
           data.candidates.map(c => renderCandidate(c)).join('');
         candEl.querySelectorAll('button[data-tmdbid]').forEach(b => {
           b.addEventListener('click', () => doSubscribe(b.dataset));
         });
       }
-    } else if (data.hint) {
-      // 0 candidates with helper hint (Phase 1.5 fallback)
-      candEl.innerHTML = '<div style="margin-top:8px; padding:10px; background:rgba(112,112,112,0.12); border-radius:8px; font-size:13px; line-height:1.6;">' +
-        '<strong>没有找到候选 — 可以试试:</strong><br>' +
-        escape(data.hint).replace(/(\d+\))/g, '<br>$1') +
-        '</div>';
+    } else if (data.hint || data.bangumi_match) {
+      // 0 candidates — show Bangumi match (if any) + helper hint
+      let html = bangumiHtml;
+      if (data.hint) {
+        html += '<div style="margin-top:8px; padding:10px; background:rgba(112,112,112,0.12); border-radius:8px; font-size:13px; line-height:1.6;">' +
+          '<strong>TMDB 没找到候选 — 可以试试:</strong><br>' +
+          escape(data.hint).replace(/(\d+\))/g, '<br>$1') +
+          '</div>';
+      }
+      candEl.innerHTML = html;
     } else {
       setTimeout(() => location.reload(), 1500);
     }
@@ -311,11 +333,16 @@ function renderCandidate(c) {
   const type = c.type || (c.media_type === 'tv' ? '电视剧' : '电影');
   const poster = c.poster_path || c.image || '';
   const overview = (c.overview || c.description || '').slice(0, 200);
+  // _via tag indicates this came from a fallback re-search (anilist:english,
+  // bangumi:name, etc.) so user knows it's a tentative match, not a direct hit.
+  const viaBadge = c._via
+    ? `<span style="margin-left:6px; padding:1px 5px; background:rgba(74,158,255,0.15); color:var(--accent); border-radius:3px; font-size:10px; font-weight:600">via ${escape(c._via)}</span>`
+    : '';
   return `
     <div class="candidate">
       ${poster ? `<img src="${poster}" loading="lazy">` : '<div style="width:60px;height:90px;background:var(--border);border-radius:4px"></div>'}
       <div class="meta">
-        <div class="title">${escape(title)}${year}</div>
+        <div class="title">${escape(title)}${year}${viaBadge}</div>
         <div class="info">${escape(type)} · TMDB ${tmdbid}</div>
         <div class="overview">${escape(overview)}</div>
       </div>
