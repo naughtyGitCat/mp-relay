@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>演员发现 — mp-relay</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #0e1116;
+      --fg: #d8d8d8;
+      --muted: #707070;
+      --accent: #4a9eff;
+      --accent-hover: #6bb1ff;
+      --border: #2a2a2a;
+      --card: #161b22;
+      --owned: #3fb950;
+      --error: #f85149;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f8fa;
+        --fg: #24292f;
+        --muted: #57606a;
+        --border: #d0d7de;
+        --card: #ffffff;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      margin: 0; padding: env(safe-area-inset-top, 0) 16px env(safe-area-inset-bottom, 16px);
+      background: var(--bg); color: var(--fg);
+      max-width: 1200px; margin: 0 auto;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header { padding: 20px 0 12px; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: 20px; }
+    header .nav a { font-size: 13px; }
+
+    .input-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 12px; margin-bottom: 16px; display: flex; gap: 8px; flex-wrap: wrap;
+    }
+    input[type=text] {
+      flex: 1; min-width: 240px; padding: 8px 12px;
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px; font: inherit;
+    }
+    button {
+      background: var(--accent); color: white; border: 0;
+      padding: 8px 16px; border-radius: 6px; font-weight: 600;
+      cursor: pointer; font-size: 13px;
+    }
+    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+    button:disabled { opacity: 0.5; cursor: wait; }
+
+    #status { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+
+    .actors-row {
+      display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .actor-chip {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--card); border: 1px solid var(--border); border-radius: 24px;
+      padding: 4px 12px 4px 4px; cursor: pointer;
+    }
+    .actor-chip:hover { border-color: var(--accent); }
+    .actor-chip img { width: 36px; height: 36px; object-fit: cover; border-radius: 50%; }
+
+    .grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;
+    }
+    .film {
+      background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+      overflow: hidden; position: relative; cursor: pointer;
+      transition: border-color 0.15s, transform 0.15s;
+    }
+    .film:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .film.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+    .film.owned { opacity: 0.65; }
+    .film .cover {
+      aspect-ratio: 16/10; background: var(--border); display: block;
+      object-fit: cover; width: 100%;
+    }
+    .film .meta { padding: 8px 10px; font-size: 12px; }
+    .film .code { font-weight: 700; color: var(--fg); }
+    .film .title { color: var(--muted); margin: 4px 0; display: -webkit-box;
+                   -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .film .date { color: var(--muted); font-size: 11px; }
+    .badge {
+      position: absolute; top: 6px; right: 6px;
+      padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700;
+    }
+    .badge.owned { background: var(--owned); color: white; }
+    .badge.sel { background: var(--accent); color: white; }
+
+    #floatbar {
+      position: sticky; bottom: env(safe-area-inset-bottom, 12px);
+      background: var(--card); border: 1px solid var(--accent); border-radius: 8px;
+      padding: 10px 12px; margin-top: 16px;
+      display: none; gap: 12px; align-items: center;
+    }
+    #floatbar.show { display: flex; }
+    #floatbar strong { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎬 演员发现</h1>
+    <div class="nav"><a href="/">← 回主页</a></div>
+  </header>
+
+  <div class="input-card">
+    <input type="text" id="q" placeholder="演员名（中/日/英）— 例: 葵つかさ" value="{{ initial_name }}">
+    <button id="search-btn">搜索</button>
+    <button id="refresh-btn" class="ghost" title="跳过 24h 缓存重新抓取">刷新</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="actors" class="actors-row"></div>
+  <div id="grid" class="grid"></div>
+
+  <div id="floatbar">
+    <span>已选 <strong id="sel-count">0</strong> 部 / 共 <span id="total-count">0</span>，已拥有 <span id="owned-count">0</span></span>
+    <button id="bulk-btn" disabled title="Phase 1 完成后启用">批量订阅 (Phase 1 待启用)</button>
+  </div>
+
+<script>
+const q = document.getElementById('q');
+const searchBtn = document.getElementById('search-btn');
+const refreshBtn = document.getElementById('refresh-btn');
+const status = document.getElementById('status');
+const actorsEl = document.getElementById('actors');
+const grid = document.getElementById('grid');
+const floatbar = document.getElementById('floatbar');
+const selCount = document.getElementById('sel-count');
+const totalCount = document.getElementById('total-count');
+const ownedCount = document.getElementById('owned-count');
+
+const selected = new Set();
+
+function escape(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function searchActors(refresh = false) {
+  const name = q.value.trim();
+  if (!name) return;
+  status.textContent = '搜索中…';
+  actorsEl.innerHTML = ''; grid.innerHTML = ''; selected.clear(); updateFloat();
+
+  const r = await fetch('/api/discover/actor?' + new URLSearchParams({ name, refresh }));
+  const data = await r.json();
+  if (data.actors?.length === 1) {
+    // single match — go straight to film list
+    status.textContent = '';
+    renderActorChip(data.actors[0]);
+    await loadFilms(data.actors[0].id, refresh);
+    return;
+  }
+  if (!data.actors?.length) {
+    status.textContent = '没找到匹配的演员';
+    return;
+  }
+  status.textContent = `找到 ${data.actors.length} 个候选 — 点击选择:`;
+  actorsEl.innerHTML = data.actors.map(a => `
+    <div class="actor-chip" data-id="${escape(a.id)}">
+      ${a.photo_url ? `<img src="${escape(a.photo_url)}" referrerpolicy="no-referrer">` : '<div style="width:36px;height:36px;background:var(--border);border-radius:50%;"></div>'}
+      <span>${escape(a.name)}</span>
+    </div>`).join('');
+  actorsEl.querySelectorAll('.actor-chip').forEach(el => {
+    el.addEventListener('click', async () => {
+      const id = el.dataset.id;
+      const a = data.actors.find(x => x.id === id);
+      actorsEl.innerHTML = '';
+      renderActorChip(a);
+      await loadFilms(id, false);
+    });
+  });
+}
+
+function renderActorChip(a) {
+  actorsEl.innerHTML = `
+    <div class="actor-chip" style="border-color:var(--accent)">
+      ${a.photo_url ? `<img src="${escape(a.photo_url)}" referrerpolicy="no-referrer">` : ''}
+      <span>${escape(a.name)}</span>
+    </div>`;
+}
+
+async function loadFilms(actorId, refresh) {
+  status.textContent = '抓取作品列表…';
+  grid.innerHTML = '';
+  selected.clear(); updateFloat();
+  const r = await fetch('/api/discover/actor?' + new URLSearchParams({ actor_id: actorId, refresh }));
+  const data = await r.json();
+  status.textContent = '';
+  totalCount.textContent = data.total;
+  ownedCount.textContent = data.owned_count;
+  floatbar.classList.add('show');
+
+  grid.innerHTML = data.films.map((f, i) => `
+    <div class="film ${f.owned ? 'owned' : ''}" data-code="${escape(f.code)}" data-idx="${i}">
+      ${f.cover_url ? `<img class="cover" src="${escape(f.cover_url)}" referrerpolicy="no-referrer" loading="lazy">` : '<div class="cover"></div>'}
+      ${f.owned ? '<span class="badge owned">✓ 已有</span>' : ''}
+      <div class="meta">
+        <div class="code">${escape(f.code)}</div>
+        <div class="title">${escape(f.title)}</div>
+        <div class="date">${escape(f.release_date)}</div>
+      </div>
+    </div>`).join('');
+  grid.querySelectorAll('.film').forEach(el => {
+    el.addEventListener('click', (e) => {
+      const code = el.dataset.code;
+      if (el.classList.contains('owned')) return;  // can't select owned
+      if (selected.has(code)) {
+        selected.delete(code); el.classList.remove('selected');
+        const b = el.querySelector('.badge.sel'); if (b) b.remove();
+      } else {
+        selected.add(code); el.classList.add('selected');
+        if (!el.querySelector('.badge.sel')) {
+          const b = document.createElement('span'); b.className = 'badge sel'; b.textContent = '已选';
+          el.appendChild(b);
+        }
+      }
+      updateFloat();
+    });
+  });
+}
+
+function updateFloat() {
+  selCount.textContent = selected.size;
+  // bulk-btn stays disabled until Phase 1 ships; but selected count still surfaces
+}
+
+searchBtn.addEventListener('click', () => searchActors(false));
+refreshBtn.addEventListener('click', () => searchActors(true));
+q.addEventListener('keydown', e => { if (e.key === 'Enter') searchActors(false); });
+
+{% if initial_name %}
+searchActors(false);
+{% endif %}
+{% if initial_actor_id %}
+loadFilms({{ initial_actor_id | tojson }}, false);
+{% endif %}
+</script>
+</body>
+</html>

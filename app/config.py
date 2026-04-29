@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # Plus the in-flight staging path so we also catch "downloading right now" cases.
     jav_staging_extra: str = r"G:\Downloads\JAV-staging"
 
+    # --- Phase 2 discovery (actor / series / studio lookup) ---
+    javbus_base: str = "https://www.javbus.com"
+    discover_cache_ttl_sec: int = 24 * 3600     # 24h default
+    discover_max_pages: int = 10                  # max paginated pages per actor
+    discover_proxy: str = ""                      # override default httpx proxy if needed
+
     # --- Service ---
     listen_host: str = "0.0.0.0"
     listen_port: int = 5000

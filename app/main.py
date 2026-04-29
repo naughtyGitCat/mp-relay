@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from . import store
 from .classifier import classify
 from .config import settings
+from . import discover
 from .exists import check_input as check_existence
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -332,6 +333,56 @@ async def subscribe(
 @app.get("/tasks")
 async def tasks_api(limit: int = 50):
     return store.list_recent(limit=limit)
+
+
+# ============================================================
+# Phase 2: actor discovery
+# ============================================================
+
+@app.get("/discover", response_class=HTMLResponse)
+async def discover_page(request: Request, name: str = "", actor_id: str = ""):
+    """演员发现页面.
+
+    /discover                     → 仅显示搜索框
+    /discover?name=葵つかさ        → 搜索演员
+    /discover?actor_id=xxx        → 直接展示该演员的作品列表
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="discover.html",
+        context={
+            "settings": settings,
+            "initial_name": name,
+            "initial_actor_id": actor_id,
+        },
+    )
+
+
+@app.get("/api/discover/actor")
+async def api_discover_actor(name: str = "", actor_id: str = "",
+                              refresh: bool = False):
+    """JSON API for the discover page.
+
+    Either provide `name` to search, or `actor_id` to fetch films.
+    """
+    if not name and not actor_id:
+        return JSONResponse({"error": "either name or actor_id required"}, status_code=400)
+
+    # If only name given: search for actor
+    if name and not actor_id:
+        actors = await discover.search_actor(name, force_refresh=refresh)
+        return JSONResponse({"query": name, "actors": actors})
+
+    # actor_id given: fetch films + annotate owned
+    films = await discover.actor_films(actor_id, force_refresh=refresh)
+    discover.annotate_owned(films)
+    owned_count = sum(1 for f in films if f.get("owned"))
+    return JSONResponse({
+        "actor_id": actor_id,
+        "films": films,
+        "total": len(films),
+        "owned_count": owned_count,
+    })
 
 
 @app.get("/tasks/{task_id}")

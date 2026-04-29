@@ -41,6 +41,69 @@ def init() -> None:
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_hash ON tasks(hash)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state)")
 
+        # Phase 2: discovery caches (TTL-based)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS actor_search_cache (
+                query       TEXT PRIMARY KEY,
+                fetched_at  REAL NOT NULL,
+                results_json TEXT NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS actor_films_cache (
+                actor_id    TEXT PRIMARY KEY,
+                fetched_at  REAL NOT NULL,
+                films_json  TEXT NOT NULL
+            )
+        """)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 cache helpers
+# ---------------------------------------------------------------------------
+
+def _ttl_ok(fetched_at: float) -> bool:
+    from .config import settings
+    return (time.time() - fetched_at) < settings.discover_cache_ttl_sec
+
+
+def actor_search_cache_get(query: str) -> Optional[list[dict]]:
+    with _lock, _db() as c:
+        row = c.execute(
+            "SELECT fetched_at, results_json FROM actor_search_cache WHERE query = ?",
+            (query.lower(),),
+        ).fetchone()
+    if row and _ttl_ok(row["fetched_at"]):
+        return json.loads(row["results_json"])
+    return None
+
+
+def actor_search_cache_set(query: str, results: list[dict]) -> None:
+    with _lock, _db() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO actor_search_cache (query, fetched_at, results_json) VALUES (?, ?, ?)",
+            (query.lower(), time.time(), json.dumps(results, ensure_ascii=False)),
+        )
+
+
+def actor_films_cache_get(actor_id: str) -> Optional[list[dict]]:
+    with _lock, _db() as c:
+        row = c.execute(
+            "SELECT fetched_at, films_json FROM actor_films_cache WHERE actor_id = ?",
+            (actor_id,),
+        ).fetchone()
+    if row and _ttl_ok(row["fetched_at"]):
+        return json.loads(row["films_json"])
+    return None
+
+
+def actor_films_cache_set(actor_id: str, films: list[dict]) -> None:
+    with _lock, _db() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO actor_films_cache (actor_id, fetched_at, films_json) VALUES (?, ?, ?)",
+            (actor_id, time.time(), json.dumps(films, ensure_ascii=False)),
+        )
+
 
 def add(*, kind: str, input_text: str, state: str, **fields: Any) -> str:
     tid = uuid.uuid4().hex[:12]
