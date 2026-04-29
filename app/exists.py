@@ -142,16 +142,29 @@ async def check_media_name(keyword: str, mp: Optional[MpClient] = None) -> dict:
                 })
 
     # Search download history (already pulled the same title).
+    # Scan first 5 pages × 50 items so we cover ~250 most recent torrents.
     downloads: list[dict] = []
-    hist_resp = await mp.request(
-        "GET", "/api/v1/history/download", params={"page": 1, "count": 50}
-    )
-    if hist_resp.status_code == 200:
+    seen_keys: set[tuple] = set()
+    kw_norm = _normalise(keyword)
+    for page in range(1, 6):
+        hist_resp = await mp.request(
+            "GET", "/api/v1/history/download", params={"page": page, "count": 50}
+        )
+        if hist_resp.status_code != 200:
+            break
         hist = hist_resp.json() or []
-        kw_norm = _normalise(keyword)
+        if not hist:
+            break
         for h in hist:
             title = h.get("title") or ""
-            if kw_norm and (kw_norm in _normalise(title) or _normalise(title) in kw_norm):
+            if not title:
+                continue
+            t_norm = _normalise(title)
+            if kw_norm and (kw_norm in t_norm or t_norm in kw_norm):
+                key = (title, h.get("date"), h.get("tmdbid"))
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
                 downloads.append({
                     "title": title,
                     "type": h.get("type"),

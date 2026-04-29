@@ -137,37 +137,47 @@ async def submit(
     log.info("submit kind=%s hints=%s force=%s text=%s",
              kind, hints, force, text[:80])
 
-    # Existence pre-check (cheap; never blocks a media_name search since /check is informational only there).
-    if not force:
-        existence = await check_existence(text, kind, hints)
-        existing_jav = existence.get("existing_jav") or []
-        existing_media = existence.get("existing_media") or {}
-        has_dup = bool(
-            existing_jav
-            or existing_media.get("subscriptions")
-            or existing_media.get("downloads")
-        )
-        if has_dup and kind != "media_name":
-            # For magnets, hard-block until user confirms.
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "duplicate": True,
-                    "kind": kind,
-                    "hints": hints,
-                    **existence,
-                    "hint": "resubmit with force=true to add anyway",
-                },
-            )
+    # Existence pre-check — always run, used for warning (and for blocking magnets).
+    existence = await check_existence(text, kind, hints)
+    existing_jav = existence.get("existing_jav") or []
+    existing_media = existence.get("existing_media") or {}
+    has_dup = bool(
+        existing_jav
+        or existing_media.get("subscriptions")
+        or existing_media.get("downloads")
+    )
 
-    if kind == "jav_magnet" or kind == "jav_torrent":
+    # Magnets / torrents: block on duplicate so user must explicitly force.
+    # media_name returns search candidates — informational warning only.
+    if has_dup and not force and kind in (
+        "jav_magnet", "jav_torrent", "magnet", "torrent"
+    ):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "duplicate": True,
+                "kind": kind,
+                "hints": hints,
+                **existence,
+                "hint": "resubmit with force=true to add anyway",
+            },
+        )
+
+    # Normal dispatch — handler returns its own JSONResponse / dict.
+    handler_resp = await _dispatch(text, kind, hints)
+
+    # Annotate response with existence info so UI can show warning even on 200.
+    return _attach_existence(handler_resp, existence)
+
+
+async def _dispatch(text: str, kind: str, hints: dict):
+    if kind in ("jav_magnet", "jav_torrent"):
         return await _handle_jav(text, kind, hints)
-    if kind == "magnet" or kind == "torrent":
+    if kind in ("magnet", "torrent"):
         return await _handle_regular_magnet(text, kind, hints)
     if kind == "media_name":
         return await _handle_media_name(text, hints)
     if kind == "jav_code":
-        # Phase 1 will implement bare-code → 馒头 PT search → list candidates.
         return JSONResponse(
             status_code=400,
             content={
@@ -176,6 +186,22 @@ async def submit(
             },
         )
     raise HTTPException(400, f"unknown kind: {kind}")
+
+
+def _attach_existence(resp: JSONResponse, existence: dict) -> JSONResponse:
+    """Merge existence info into a JSONResponse body."""
+    import json
+    try:
+        body = json.loads(resp.body.decode("utf-8"))
+    except Exception:
+        return resp
+    if isinstance(body, dict):
+        body.setdefault("existing_jav", existence.get("existing_jav") or [])
+        body.setdefault("existing_media", existence.get("existing_media") or {})
+        if existence.get("jav_code"):
+            body.setdefault("jav_code", existence["jav_code"])
+        return JSONResponse(content=body, status_code=resp.status_code)
+    return resp
 
 
 async def _handle_jav(text: str, kind: str, hints: dict) -> JSONResponse:

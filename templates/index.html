@@ -173,6 +173,17 @@ async function doSubmit(force = false) {
     let msg = '<strong>已受理 (kind=' + data.kind + ')</strong>';
     if (data.message) msg += '<br>' + data.message;
     if (data.task_id) msg += '<br>task: <code>' + data.task_id + '</code>';
+
+    // Even on 200, surface existence info as an informational warning.
+    const dupMatches = (data.existing_jav?.length || 0)
+      + (data.existing_media?.subscriptions?.length || 0)
+      + (data.existing_media?.downloads?.length || 0);
+    if (dupMatches > 0) {
+      msg += '<div style="margin-top:8px; padding:8px; background:rgba(248,81,73,0.08); border-left:3px solid var(--error)">';
+      msg += '<strong>⚠ 注意: 检测到 ' + dupMatches + ' 条已存在记录</strong>';
+      msg += renderExistenceList(data, false);
+      msg += '</div>';
+    }
     result.innerHTML = msg;
 
     if (data.candidates && data.candidates.length) {
@@ -221,19 +232,7 @@ function renderDuplicate(data, allowForce) {
   result.className = 'err';
   let html = '<strong>⚠ 检测到已存在</strong>';
   if (data.jav_code) html += ' (番号 <code>' + data.jav_code + '</code>)';
-  html += '<ul style="margin:8px 0; padding-left:20px;">';
-
-  for (const j of data.existing_jav || []) {
-    html += '<li><code>' + escape(j.in) + '</code> ' + escape(j.path) + '</li>';
-  }
-  for (const s of data.existing_media?.subscriptions || []) {
-    html += '<li>订阅: ' + escape(s.name) + (s.year ? ' (' + s.year + ')' : '') + ' state=' + escape(s.state || '') + '</li>';
-  }
-  for (const d of data.existing_media?.downloads || []) {
-    html += '<li>历史下载: ' + escape(d.title) + ' [' + escape(d.type || '') + '] ' + escape(d.date || '') + '</li>';
-  }
-  html += '</ul>';
-
+  html += renderExistenceList(data, true);
   if (allowForce) {
     html += '<button id="force-btn" style="background:var(--error)">无视警告强制提交</button>';
   }
@@ -241,6 +240,30 @@ function renderDuplicate(data, allowForce) {
   if (allowForce) {
     document.getElementById('force-btn').addEventListener('click', () => doSubmit(true));
   }
+}
+
+function renderExistenceList(data, fullDetails) {
+  let html = '<ul style="margin:8px 0; padding-left:20px;">';
+  for (const j of data.existing_jav || []) {
+    html += '<li><code>' + escape(j.in) + '</code> ' + escape(j.path) + '</li>';
+  }
+  for (const s of data.existing_media?.subscriptions || []) {
+    html += '<li>订阅 #' + escape(String(s.id || '')) + ': ' + escape(s.name)
+         + (s.year ? ' (' + escape(s.year) + ')' : '')
+         + (s.season ? ' S' + escape(String(s.season)) : '')
+         + ' [' + escape(s.type || '') + ']'
+         + (s.state ? ' state=' + escape(s.state) : '')
+         + '</li>';
+  }
+  for (const d of data.existing_media?.downloads || []) {
+    html += '<li>历史下载: ' + escape(d.title)
+         + (d.type ? ' [' + escape(d.type) + ']' : '')
+         + (d.date ? ' ' + escape(d.date) : '')
+         + (d.tmdbid ? ' tmdb=' + escape(String(d.tmdbid)) : '')
+         + '</li>';
+  }
+  html += '</ul>';
+  return html;
 }
 
 function renderCandidate(c) {
