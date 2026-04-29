@@ -41,7 +41,7 @@ If `getUpdates` returns an empty `result`, send another message to the bot in Te
 SSH to the host:
 
 ```powershell
-notepad C:\mp-relay\.env
+notepad E:\mp-relay\.env
 ```
 
 Find the Telegram block (already scaffolded — last few lines), uncomment the two lines, and fill in:
@@ -87,5 +87,6 @@ Each message is HTML-formatted, includes task id and (truncated) error / file pa
 - **`/health` shows `getMe HTTP 401`**: token is wrong. Re-check.
 - **`/health` shows `getMe HTTP 404`**: token is malformed. Re-paste from BotFather.
 - **No messages arrive but `/health` is `ok`**: send `/start` to your bot first; bots can't message users who haven't initiated.
-- **Wrong chat_id**: `/health` will pass (`getMe` is identity-only) but `sendMessage` returns 400 "chat not found". Check service logs (`C:\mp-relay\service-stderr.log`) for the exact response.
+- **Wrong chat_id**: `/health` will pass (`getMe` is identity-only) but `sendMessage` returns 400 "chat not found". Check service logs (`E:\mp-relay\service-stderr.log`) for the exact response.
+- **Token / chat_id swapped**: easy to do — bot token has format `<digits>:<base64>` (with a colon), chat_id is just digits. If `/health` fails with `getMe HTTP 404`, you've put a chat_id in the token field. Swap them and restart.
 - **Telegram unreachable from China**: set `HTTPS_PROXY` in `.env` or run mp-relay through a proxy reachable from `10.100.100.13`.
