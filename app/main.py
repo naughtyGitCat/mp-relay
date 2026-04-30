@@ -17,7 +17,7 @@ from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import discover, gfriends, jav_search, media_fallback
+from . import cloud115, discover, gfriends, jav_search, media_fallback
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -51,6 +51,7 @@ async def lifespan(app: FastAPI):
 
     store.init()
     store.init_retry_state()
+    cloud115.init_token_table()
     log.info("DB initialised at %s", settings.state_db)
 
     # Ensure qBT JAV category exists
@@ -108,11 +109,13 @@ async def health():
     mdcx_err = await mdcx_healthcheck()
     tg_err = await notify.healthcheck()
     bgm_err = await bgm.healthcheck()
+    c115_err = await cloud115.healthcheck()
     return {
         "ok": mdcx_err is None,
         "mdcx": "ok" if mdcx_err is None else mdcx_err,
         "telegram": "ok" if tg_err is None else tg_err,
         "bangumi": "ok" if bgm_err is None else bgm_err,
+        "cloud115": "ok" if c115_err is None else c115_err,
     }
 
 
@@ -631,3 +634,126 @@ async def api_gfriends(name: str = ""):
         raise HTTPException(400, "name required")
     url = await gfriends.find_actor_avatar_url(name)
     return {"name": name, "url": url}
+
+
+# ============================================================
+# Phase 1.8: 115 cloud-drive offline download (OAuth)
+# ============================================================
+
+@app.get("/auth/115", response_class=HTMLResponse)
+async def auth_115_page(request: Request):
+    """One-time QR-scan authorization page. After this, mp-relay can push
+    magnets to 115's offline-download queue without ever asking again
+    (refresh tokens auto-rotate).
+    """
+    authorized = cloud115.is_authorized()
+    return templates.TemplateResponse(
+        request=request,
+        name="auth_115.html",
+        context={"authorized": authorized},
+    )
+
+
+@app.post("/api/cloud115/start")
+async def api_cloud115_start():
+    """Begin device-code flow. Returns the QR-scan handle for the auth page."""
+    try:
+        return await cloud115.start_auth()
+    except Exception as e:
+        log.exception("cloud115 start_auth failed: %s", e)
+        raise HTTPException(500, f"start_auth failed: {e}")
+
+
+@app.get("/api/cloud115/poll")
+async def api_cloud115_poll(uid: str, time: str, sign: str):
+    """Poll the QR scan status. When status flips to 2, server-side
+    auto-exchanges the device code for tokens and returns authorized=true."""
+    try:
+        return await cloud115.poll_auth(uid, time, sign)
+    except Exception as e:
+        log.warning("cloud115 poll_auth failed: %s", e)
+        return {"status": -1, "msg": str(e), "authorized": False}
+
+
+@app.post("/api/cloud115/clear")
+async def api_cloud115_clear():
+    """Forget current authorization (use this if tokens go stale and need
+    fresh QR scan). Idempotent."""
+    cloud115.clear_tokens()
+    return {"cleared": True}
+
+
+@app.post("/api/cloud115-add")
+async def api_cloud115_add(magnet: str = Form(...), code: str = Form("")):
+    """Push a magnet to 115's offline queue. Records a task so it shows up in
+    the live tasks table.
+    """
+    if not magnet.startswith("magnet:") and not magnet.startswith("http"):
+        raise HTTPException(400, "magnet (or http:// / ed2k:) URL required")
+    if not cloud115.is_authorized():
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "unauthorized",
+                "auth_url": "/auth/115",
+                "hint": "115 还未授权 — 先去 /auth/115 扫码",
+            },
+        )
+
+    try:
+        resp = await cloud115.add_offline_url(magnet)
+    except Exception as e:
+        log.exception("cloud115 add failed: %s", e)
+        tid = store.add(
+            kind="cloud_offline_115",
+            input_text=magnet[:200],
+            state="cloud_failed",
+            title=code or "(unknown)",
+            error=str(e)[:300],
+        )
+        raise HTTPException(502, f"115 add_offline_url failed: {e}")
+
+    # Successful response shape per 115 docs:
+    # {"state": True, "code": 0, "message": "", "data": [{"info_hash": ..., "name": ..., "size": ...}]}
+    state = resp.get("state", True)
+    if not state:
+        msg = resp.get("message") or resp.get("error_msg") or str(resp)
+        tid = store.add(
+            kind="cloud_offline_115",
+            input_text=magnet[:200],
+            state="cloud_failed",
+            title=code or "(unknown)",
+            error=msg[:300],
+        )
+        return JSONResponse(status_code=502, content={
+            "task_id": tid, "error": msg, "raw": resp,
+        })
+
+    data = resp.get("data") or {}
+    # 115's response sometimes returns a single dict, sometimes a list per task.
+    first = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+    info_hash = first.get("info_hash") or ""
+    name = first.get("name") or ""
+
+    tid = store.add(
+        kind="cloud_offline_115",
+        input_text=magnet[:200],
+        state="submitted_to_115",
+        hash=info_hash,
+        title=name or code or "(unknown)",
+    )
+    return {
+        "task_id": tid,
+        "info_hash": info_hash,
+        "name": name,
+        "state": "submitted_to_115",
+    }
+
+
+@app.get("/api/cloud115/list")
+async def api_cloud115_list(page: int = 1):
+    """Pass-through to 115's offline list — useful for a 'check progress on
+    115' button if/when we add one."""
+    if not cloud115.is_authorized():
+        raise HTTPException(409, "115 unauthorized; visit /auth/115")
+    return await cloud115.list_offline(page=page)
