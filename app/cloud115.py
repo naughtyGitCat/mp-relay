@@ -28,8 +28,10 @@ import logging
 import secrets
 import sqlite3
 import time
+from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from p115client import P115OpenClient
 
 from .config import settings
@@ -257,11 +259,13 @@ async def add_offline_url(magnet: str, save_dir_id: str = "") -> dict:
       - data: list of task dicts with {info_hash, name, size, ...}
 
     ``save_dir_id`` is the 115 folder ID where the completed file will land.
-    Empty string = 115's default offline folder (云下载 / 我的接收).
+    If empty, falls back to ``settings.cloud115_save_dir_id``; if that's also
+    empty, 115 uses its default offline folder (云下载 / 我的接收).
     """
     payload: dict[str, Any] = {"urls": magnet}
-    if save_dir_id:
-        payload["wp_path_id"] = save_dir_id
+    target = save_dir_id or settings.cloud115_save_dir_id
+    if target:
+        payload["wp_path_id"] = target
     return await _call("offline_add_urls_open", payload)
 
 
@@ -286,3 +290,245 @@ async def healthcheck() -> Optional[str]:
         return None
     except Exception as e:
         return f"cloud115 probe error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Cloud → local sync (Phase 1.9)
+#
+# Once an offline task hits status=2 on 115, the file (or folder) lives in
+# the user's 115 drive. To run mdcx and surface it in Jellyfin we have to
+# stream it back to local disk. The flow is:
+#
+#   1. fs_files_open(file_id)          → list folder contents (most magnets
+#                                        resolve to a folder; if the file_id
+#                                        IS a single file the list is empty)
+#   2. download_url_info_open(pickcode) → signed CDN URL + metadata
+#   3. httpx.stream("GET", url)         → write to local path in 1 MiB chunks
+#
+# 115's CDN URLs are short-lived (~minutes); fetch one immediately before
+# starting the actual download. Resumable downloads are out of scope for v1
+# — on partial failure we delete the bad file and let the watcher retry.
+# ---------------------------------------------------------------------------
+
+# Chunk size for streaming downloads. 1 MiB is a reasonable balance — too
+# small and we burn CPU on syscalls, too large and we hold memory + delay
+# disk flush.
+_CHUNK_SIZE: int = 1024 * 1024
+
+# 115's CDN signs download URLs against the User-Agent that requested them.
+# If we generate the URL with one UA and fetch with another, the CDN returns
+# 403. Pin a single value used for both calls. Browser-style UA works; the
+# specific token doesn't matter as long as both sides match.
+_DOWNLOAD_UA: str = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+async def list_folder_contents(folder_id: str | int) -> list[dict]:
+    """List children of a 115 folder. Empty list if it's not a folder
+    (file_id pointing at a single file) — caller should treat that as a
+    'singleton' download case."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("115 未授权")
+    try:
+        resp = await client.fs_files_open(int(folder_id), async_=True)
+    except Exception as e:
+        msg = str(e)
+        if any(k in msg for k in _TOKEN_EXPIRED_MARKERS):
+            client = await _refresh_now(client)
+            resp = await client.fs_files_open(int(folder_id), async_=True)
+        else:
+            raise
+    if isinstance(resp, dict) and resp.get("state") is False:
+        # Often returned when the cid is actually a file, not a folder.
+        return []
+    return resp.get("data") or []
+
+
+async def get_download_info(pickcode: str) -> dict:
+    """Resolve a pickcode → ``{file_name, file_size, sha1, url}``.
+
+    Passes ``user_agent=_DOWNLOAD_UA`` so the signed URL the CDN issues is
+    bound to that UA. ``stream_download`` uses the same UA when fetching.
+    """
+    client = _client()
+    if client is None:
+        raise RuntimeError("115 未授权 — 请先访问 /auth/115 完成扫码授权")
+    method = client.download_url_info_open
+    try:
+        resp = await method({"pick_code": pickcode}, user_agent=_DOWNLOAD_UA, async_=True)
+    except Exception as e:
+        msg = str(e)
+        if not any(marker in msg for marker in _TOKEN_EXPIRED_MARKERS):
+            raise
+        client = await _refresh_now(client)
+        method = client.download_url_info_open
+        resp = await method({"pick_code": pickcode}, user_agent=_DOWNLOAD_UA, async_=True)
+
+    if not resp.get("state"):
+        raise RuntimeError(
+            f"download_url_info_open failed: {resp.get('message') or resp}"
+        )
+    items = resp.get("data") or {}
+    if not items:
+        raise RuntimeError("download_url_info_open returned empty data")
+    # Response keyed by file_id; we just want the single entry.
+    first = next(iter(items.values()))
+    url_obj = first.get("url") or {}
+    return {
+        "file_name": first.get("file_name", ""),
+        "file_size": int(first.get("file_size") or 0),
+        "sha1": first.get("sha1", ""),
+        "url": url_obj.get("url", "") if isinstance(url_obj, dict) else str(url_obj),
+    }
+
+
+async def stream_download(pickcode: str, dest: Path) -> int:
+    """Stream a single 115 file to ``dest``. Returns bytes written.
+
+    Removes the partial file on any error so the next attempt starts clean.
+    Aborts (raises) if the actual size doesn't match what 115 advertised.
+    """
+    info = await get_download_info(pickcode)
+    url = info["url"]
+    expected = info["file_size"]
+    if not url:
+        raise RuntimeError(f"empty download URL for pickcode={pickcode}")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    try:
+        timeout = httpx.Timeout(60.0, read=600.0)
+        # follow_redirects: 115 CDN sometimes 302s to a regional edge.
+        # User-Agent must match the one used when generating the signed URL —
+        # 115's CDN binds the signature to UA and returns 403 otherwise.
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": _DOWNLOAD_UA},
+        ) as c:
+            async with c.stream("GET", url) as resp:
+                resp.raise_for_status()
+                with dest.open("wb") as f:
+                    async for chunk in resp.aiter_bytes(chunk_size=_CHUNK_SIZE):
+                        f.write(chunk)
+                        written += len(chunk)
+    except Exception:
+        if dest.exists():
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+        raise
+
+    if expected and written != expected:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"size mismatch downloading {dest.name}: wrote {written}, expected {expected}"
+        )
+    return written
+
+
+# Files we never want to drag down from 115 to local disk. Forum HTML, .url
+# shortcuts, .txt readme spam — same junk classes that cleanup.py would
+# delete locally anyway. Saves bandwidth.
+_SKIP_EXTS_ON_SYNC: frozenset[str] = frozenset({
+    ".url", ".lnk", ".html", ".htm", ".txt", ".md", ".rtf", ".docx", ".doc",
+})
+
+
+async def sync_completed_task(task: dict, dest_root: Path) -> Path:
+    """Download a completed 115 offline task to ``dest_root/<name>/``.
+
+    The 115 task dict is what ``offline_list_open`` returns (status=2
+    expected). For magnets that resolved to a folder, every file inside is
+    pulled (skipping junk extensions). For singleton-file results, the file
+    is dropped directly into the target dir.
+
+    Returns the path to the per-task local folder.
+    """
+    name = task.get("name") or task.get("info_hash") or "unknown"
+    file_id = task.get("file_id") or ""
+    pick_code = task.get("pick_code") or ""
+
+    if not file_id and not pick_code:
+        raise RuntimeError(
+            f"task {task.get('info_hash')} has neither file_id nor pick_code"
+        )
+
+    dest_dir = dest_root / name
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Probe: is file_id a folder?
+    children: list[dict] = []
+    if file_id:
+        try:
+            children = await list_folder_contents(file_id)
+        except Exception as e:
+            log.warning("list_folder_contents(%s) failed: %s", file_id, e)
+            children = []
+
+    if children:
+        for child in children:
+            # fc: "1" = file, "0"/"" = folder. Skip subfolders for v1; mp-relay
+            # rarely needs nesting and the existing watcher pipeline assumes
+            # everything's at one level under the task dir.
+            if child.get("fc") != "1":
+                continue
+            cn = child.get("fn") or "unknown"
+            if Path(cn).suffix.lower() in _SKIP_EXTS_ON_SYNC:
+                log.info("[c115 sync] skip junk: %s", cn)
+                continue
+            cpc = child.get("pc") or ""
+            if not cpc:
+                log.warning("[c115 sync] child has no pickcode: %s", child)
+                continue
+            log.info("[c115 sync] %s/%s", name, cn)
+            await stream_download(cpc, dest_dir / cn)
+    elif pick_code:
+        # Singleton-file task — file_id WAS the file, list returned empty.
+        log.info("[c115 sync] singleton %s", name)
+        await stream_download(pick_code, dest_dir / name)
+    else:
+        raise RuntimeError(
+            f"task {task.get('info_hash')} folder is empty and no singleton pickcode"
+        )
+
+    return dest_dir
+
+
+async def list_offline_completed_by_hashes(
+    info_hashes: set[str], *, max_pages: int = 50,
+) -> dict[str, dict]:
+    """Scan offline-task pages for tasks matching any hash in the input set.
+
+    Returns ``{info_hash: task_dict}`` for every match found, regardless of
+    status. Caller filters by status to find completed (=2) ones.
+
+    Stops scanning early when every requested hash has been located.
+    """
+    if not info_hashes:
+        return {}
+    targets = {h.lower() for h in info_hashes}
+    found: dict[str, dict] = {}
+    for page in range(1, max_pages + 1):
+        try:
+            resp = await list_offline(page=page)
+        except Exception as e:
+            log.warning("[c115 watch] list_offline(page=%s) failed: %s", page, e)
+            break
+        tasks = (resp.get("data") or {}).get("tasks") or []
+        if not tasks:
+            break
+        for t in tasks:
+            h = (t.get("info_hash") or "").lower()
+            if h in targets and h not in found:
+                found[h] = t
+        if len(found) >= len(targets):
+            break
+    return found

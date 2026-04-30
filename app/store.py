@@ -249,3 +249,25 @@ def list_recent(limit: int = 50) -> list[dict]:
             "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_in_states(states: list[str], *, kind: Optional[str] = None,
+                   limit: int = 100) -> list[dict]:
+    """Return tasks whose ``state`` matches any of the given values.
+
+    Used by the cloud-115 watcher to find ``submitted_to_115`` rows that
+    need a sync attempt on each tick. Pass ``kind`` to scope further.
+    """
+    if not states:
+        return []
+    placeholders = ", ".join("?" * len(states))
+    sql = f"SELECT * FROM tasks WHERE state IN ({placeholders})"
+    params: list[Any] = list(states)
+    if kind:
+        sql += " AND kind = ?"
+        params.append(kind)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    with _lock, _db() as c:
+        rows = c.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]

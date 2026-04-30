@@ -89,6 +89,24 @@ class Settings(BaseSettings):
     # If set, only these event kinds are forwarded. Empty = all event kinds.
     telegram_event_filter: str = ""   # comma-separated, e.g. "qc_failed_exhausted,scrape_failed"
 
+    # --- 115 cloud-drive offline download (Phase 1.8 / 1.9) ---
+    # Folder ID on 115 where mp-relay-pushed offline tasks land. Empty = use
+    # 115's default offline folder (我的接收), but mixing mp-relay content with
+    # other offline tasks is messy — recommended to create a dedicated folder
+    # on 115 and paste its cid here.
+    cloud115_save_dir_id: str = ""
+    # Local directory where files synced from 115 are dropped before the
+    # post-download pipeline runs. Defaults to the qBT staging path so both
+    # sources land in the same place.
+    cloud115_local_staging_dir: str = r"G:\Downloads\JAV-staging"
+    # How often to poll 115's offline list for completed tasks (seconds).
+    cloud115_poll_interval_sec: int = 60
+    # Cap pagination when scanning 115 offline list. With 30 tasks/page,
+    # default 50 covers the most recent 1500 tasks. If a user has more
+    # historical tasks than this, pending ones still in the queue may be
+    # missed; raise this if needed.
+    cloud115_scan_max_pages: int = 50
+
 
 settings = Settings()
 

@@ -17,7 +17,7 @@ from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import cloud115, discover, gfriends, jav_search, media_fallback
+from . import cloud115, cloud115_watcher, discover, gfriends, jav_search, media_fallback
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -71,16 +71,20 @@ async def lifespan(app: FastAPI):
 
     stop_event = asyncio.Event()
     watcher_task = asyncio.create_task(watch_loop(stop_event), name="watcher")
+    cloud115_task = asyncio.create_task(
+        cloud115_watcher.cloud115_watch_loop(stop_event), name="cloud115_watcher",
+    )
 
     try:
         yield
     finally:
         log.info("shutting down")
         stop_event.set()
-        try:
-            await asyncio.wait_for(watcher_task, timeout=10)
-        except asyncio.TimeoutError:
-            watcher_task.cancel()
+        for t in (watcher_task, cloud115_task):
+            try:
+                await asyncio.wait_for(t, timeout=10)
+            except asyncio.TimeoutError:
+                t.cancel()
 
 
 app = FastAPI(title="mp-relay", lifespan=lifespan)
