@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>授权 115 — mp-relay</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #0e1116;
+      --fg: #d8d8d8;
+      --muted: #707070;
+      --accent: #4a9eff;
+      --border: #2a2a2a;
+      --card: #161b22;
+      --ok: #3fb950;
+      --error: #f85149;
+    }
+    @media (prefers-color-scheme: light) {
+      :root { --bg: #f6f8fa; --fg: #24292f; --muted: #57606a; --border: #d0d7de; --card: #ffffff; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      margin: 0; padding: 24px;
+      background: var(--bg); color: var(--fg);
+      max-width: 600px; margin: 0 auto;
+    }
+    a { color: var(--accent); }
+    h1 { font-size: 20px; margin: 16px 0; }
+    .nav { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 20px; margin-bottom: 16px;
+    }
+    .qr-wrap { text-align: center; padding: 16px 0; }
+    .qr-wrap img {
+      max-width: 240px; max-height: 240px;
+      background: white; padding: 8px; border-radius: 8px;
+    }
+    button {
+      background: var(--accent); color: white; border: 0;
+      padding: 10px 20px; border-radius: 6px; font-weight: 600;
+      cursor: pointer; font-size: 14px;
+    }
+    button.ghost {
+      background: transparent; color: var(--accent); border: 1px solid var(--accent);
+    }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    .status {
+      padding: 10px 12px; border-radius: 6px;
+      margin: 12px 0; font-size: 13px;
+    }
+    .status.ok { background: rgba(63, 185, 80, 0.12); color: var(--ok); border-left: 3px solid var(--ok); }
+    .status.warn { background: rgba(247, 169, 67, 0.12); color: orange; border-left: 3px solid orange; }
+    .status.err { background: rgba(248, 81, 73, 0.12); color: var(--error); border-left: 3px solid var(--error); }
+    .small { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    code { background: rgba(112, 112, 112, 0.15); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="nav"><a href="/">← 回主页</a></div>
+  <h1>☁️ 授权 115 云盘</h1>
+
+  {% if authorized %}
+  <div class="card">
+    <div class="status ok"><strong>✓ 已授权</strong> — mp-relay 可以推磁链到 115 离线队列</div>
+    <p>每个磁链候选行右侧的 <code>☁️ 推 115 离线</code> 按钮就能直接用。</p>
+    <p class="small">如果今后出现 token 过期之类的问题（很罕见），可以重新授权：</p>
+    <button id="reauth-btn" class="ghost">重新授权</button>
+  </div>
+  {% else %}
+  <div class="card">
+    <p>把磁链推到 <strong>115 云盘</strong>用云端带宽下载，省家里的 BT 流量。</p>
+    <p>这是一次性的扫码授权 — 完成后 mp-relay 自动管理 token，不再需要你手动维护。</p>
+    <button id="start-btn">开始授权</button>
+  </div>
+  {% endif %}
+
+  <div id="qr-card" class="card" style="display:none">
+    <div id="qr" class="qr-wrap"></div>
+    <div id="auth-status" class="status warn">等待扫码…</div>
+    <p class="small">用 <strong>115 手机 App / 客户端</strong>扫描上面的二维码，确认授权。<br>
+       页面会每 3 秒自动检查状态。</p>
+  </div>
+
+<script>
+const startBtn = document.getElementById('start-btn');
+const reauthBtn = document.getElementById('reauth-btn');
+const qrCard = document.getElementById('qr-card');
+const qrEl = document.getElementById('qr');
+const statusEl = document.getElementById('auth-status');
+
+let pollHandle = null;
+
+function setStatus(msg, level = 'warn') {
+  statusEl.className = 'status ' + level;
+  statusEl.textContent = msg;
+}
+
+async function startAuth() {
+  if (startBtn) startBtn.disabled = true;
+  setStatus('生成二维码中…', 'warn');
+  qrCard.style.display = 'block';
+
+  let resp;
+  try {
+    const r = await fetch('/api/cloud115/start', { method: 'POST' });
+    resp = await r.json();
+    if (!r.ok) throw new Error(resp.detail || JSON.stringify(resp));
+  } catch (e) {
+    setStatus('生成二维码失败: ' + e.message, 'err');
+    if (startBtn) startBtn.disabled = false;
+    return;
+  }
+
+  // The qrcode field is a string 115's mobile app expects to scan.
+  // Render via a public QR-image generator (free, no auth, generates PNG
+  // server-side from a query string).
+  const qrSrc = resp.qrcode
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(resp.qrcode)}`
+    : '';
+  qrEl.innerHTML = qrSrc
+    ? `<img src="${qrSrc}" alt="115 授权二维码"><div class="small" style="margin-top:8px">UID: <code>${resp.uid.slice(0, 16)}…</code></div>`
+    : '<div class="status err">未拿到二维码 payload</div>';
+  setStatus('请用 115 客户端扫码…', 'warn');
+
+  pollHandle = setInterval(() => pollOnce(resp.uid, resp.time, resp.sign), 3000);
+}
+
+async function pollOnce(uid, time, sign) {
+  try {
+    const r = await fetch('/api/cloud115/poll?' + new URLSearchParams({uid, time, sign}));
+    const j = await r.json();
+    if (j.authorized) {
+      clearInterval(pollHandle); pollHandle = null;
+      setStatus('✓ 授权成功！1 秒后跳回主页', 'ok');
+      setTimeout(() => location.href = '/', 1200);
+      return;
+    }
+    // status: 0 未扫描, 1 已扫描待确认, -1/-2 取消/过期
+    const msg = ({
+      0: '等待扫码…',
+      1: '已扫描，请在 115 客户端确认授权',
+      [-1]: '已取消授权',
+      [-2]: '二维码已过期，请刷新页面重试',
+    }[j.status]) || j.msg || `状态: ${j.status}`;
+    setStatus(msg, j.status < 0 ? 'err' : 'warn');
+    if (j.status < 0) { clearInterval(pollHandle); pollHandle = null; }
+  } catch (e) {
+    setStatus('轮询失败: ' + e.message, 'err');
+    clearInterval(pollHandle); pollHandle = null;
+  }
+}
+
+if (startBtn) startBtn.addEventListener('click', startAuth);
+if (reauthBtn) reauthBtn.addEventListener('click', async () => {
+  if (!confirm('清除当前授权并重新扫码？')) return;
+  await fetch('/api/cloud115/clear', { method: 'POST' });
+  location.reload();
+});
+</script>
+</body>
+</html>

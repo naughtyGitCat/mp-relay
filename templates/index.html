@@ -228,9 +228,7 @@ async function doSubmit(force = false) {
         candEl.innerHTML = '<h3 style="font-size:14px; margin:12px 0 8px;">'
           + '番号 <code>' + escape(data.code) + '</code> 找到 ' + data.candidates.length + ' 个种子:</h3>'
           + data.candidates.map(c => renderJavCandidate(c)).join('');
-        candEl.querySelectorAll('button[data-magnet]').forEach(b => {
-          b.addEventListener('click', () => doJavAdd(b.dataset));
-        });
+        wireCandidateButtons();
       } else {
         const heading = data.kind === 'id_ref'
           ? '直接定位到的媒体:'
@@ -363,20 +361,24 @@ function renderCandidate(c) {
 function renderJavCandidate(c) {
   const qLabel = c.quality_score >= 4 ? '4K' : c.quality_score >= 3 ? 'FHD' : c.quality_score >= 2 ? 'HD' : 'SD';
   const subBadge = c.has_chinese_subs ? '<span style="background:#3fb950;color:white;padding:1px 5px;border-radius:3px;font-size:10px;margin-left:4px">中字</span>' : '';
+  const sourceBadge = c.source && c.source !== 'sukebei'
+    ? `<span style="background:rgba(74,158,255,0.15);color:var(--accent);padding:1px 5px;border-radius:3px;font-size:10px;margin-left:4px">${escape(c.source)}</span>`
+    : '';
   return `
     <div class="candidate" style="padding:8px 10px;">
       <div class="meta">
-        <div class="title">${escape(c.title)}${subBadge}</div>
+        <div class="title">${escape(c.title)}${subBadge}${sourceBadge}</div>
         <div class="info">
           <span style="color:var(--accent)">[${qLabel}]</span> ·
           ${escape(c.size_str)} ·
           ↓${c.seeders} ↑${c.leechers} ·
           下载${c.downloads} ·
-          ${c.pub_date.slice(5, 16)}
+          ${(c.pub_date || '').slice(5, 16)}
         </div>
       </div>
-      <div class="actions">
-        <button data-magnet="${escape(c.magnet)}" data-code="${escape(c.info_hash)}">下载</button>
+      <div class="actions" style="display:flex; flex-direction:column; gap:4px;">
+        <button data-magnet="${escape(c.magnet)}" data-code="${escape(c.info_hash)}">🧲 加入 qBT</button>
+        <button class="ghost" style="font-size:11px; padding:4px 10px;" data-c115-magnet="${escape(c.magnet)}" data-c115-code="${escape(c.info_hash)}">☁️ 推 115 离线</button>
       </div>
     </div>`;
 }
@@ -424,14 +426,63 @@ async function doKeywordMagnetSearch(keyword) {
     html += cands.map(c => renderJavCandidate(c)).join('');
   }
   candEl.innerHTML = html;
-  candEl.querySelectorAll('button[data-magnet]').forEach(b => {
-    b.addEventListener('click', () => doJavAdd(b.dataset));
-  });
+  wireCandidateButtons();
   // Re-wire the (now-cloned) keyword search button on the regenerated banner
   const newBtn = document.getElementById('bgm-magnet-btn');
   if (newBtn) {
     newBtn.addEventListener('click', () => doKeywordMagnetSearch(newBtn.dataset.jp));
   }
+}
+
+function wireCandidateButtons() {
+  candEl.querySelectorAll('button[data-magnet]').forEach(b => {
+    b.addEventListener('click', () => doJavAdd(b.dataset));
+  });
+  candEl.querySelectorAll('button[data-c115-magnet]').forEach(b => {
+    b.addEventListener('click', () => doCloud115Add({
+      magnet: b.dataset.c115Magnet,
+      code: b.dataset.c115Code,
+      btn: b,
+    }));
+  });
+}
+
+async function doCloud115Add(d) {
+  const orig = d.btn.textContent;
+  d.btn.disabled = true;
+  d.btn.textContent = '推送中…';
+  const fd = new FormData();
+  fd.set('magnet', d.magnet);
+  if (d.code) fd.set('code', d.code);
+  let r, j;
+  try {
+    r = await fetch('/api/cloud115-add', { method: 'POST', body: fd });
+    j = await r.json();
+  } catch (err) {
+    result.className = 'err';
+    result.innerHTML = '<strong>请求失败</strong> ' + err.message;
+    d.btn.disabled = false; d.btn.textContent = orig;
+    return;
+  }
+  if (r.status === 409 && j.error === 'unauthorized') {
+    result.className = 'err';
+    result.innerHTML = '<strong>115 还未授权</strong> — <a href="/auth/115">点这里去扫码授权</a>';
+    d.btn.disabled = false; d.btn.textContent = orig;
+    return;
+  }
+  if (!r.ok) {
+    result.className = 'err';
+    result.innerHTML = '<strong>115 推送失败</strong><pre>' + JSON.stringify(j, null, 2) + '</pre>';
+    d.btn.disabled = false; d.btn.textContent = orig;
+    return;
+  }
+  result.className = 'ok';
+  result.innerHTML = '<strong>☁️ 已推到 115 离线</strong> '
+    + (j.name ? `(${escape(j.name.slice(0, 60))}) ` : '')
+    + 'task=<code>' + escape(j.task_id) + '</code> · '
+    + '<a href="https://115.com/?ct=offline" target="_blank">去 115 看进度</a>';
+  d.btn.textContent = '✓ 已推送';
+  // Leave button disabled so user doesn't double-submit
 }
 
 async function doSubscribe(d) {
