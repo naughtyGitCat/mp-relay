@@ -18,7 +18,10 @@ cloud sync. The caller passes (target_dir, task_id, optional retry_handler).
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from . import cleanup, merger, metrics as m, notify, qc, store
@@ -27,6 +30,107 @@ from .exists import extract_code
 from .mdcx_runner import scrape_dir
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Path / filename sanitization for mdcx compatibility
+# ---------------------------------------------------------------------------
+#
+# mdcx's internal scanning uses Python ``Path.glob`` / ``rglob`` which treat
+# ``[...]`` as character classes. Folders + filenames with ``[4K]`` /
+# ``[H265]`` / ``[CN]`` pass through every other tool (qBT, ffmpeg, our
+# triage) silently, then mdcx returns "Movie folder does not exist" or
+# scans an empty list and reports total=0. The pipeline marks the task
+# scraped in either case — quiet failure.
+#
+# Real example that triggered this fix: 115 sync produced
+#     G:\Downloads\JAV-staging\SNOS-073.[4K]@R90s\169bbs.com@SNOS-073_[4K].mkv
+# — both dir and file have ``[4K]``. mdcx scanned 0 files; we wrote
+# ``state=scraped`` and the user discovered it manually a day later.
+#
+# Fix: rename the staging dir + the video files inside it to a safe form
+# before invoking mdcx. The replacements are conservative — only chars
+# known to interact with glob / mdcx's filename regex are stripped:
+#   [, ], (, ), {, }   — glob char classes and grouping
+#   @                   — sometimes used as fragment separator
+# Unicode + spaces + Chinese characters are left alone (mdcx handles them).
+
+_UNSAFE_CHARS_RE: re.Pattern = re.compile(r"[\[\](){}@]")
+
+
+def _sanitize_name(name: str) -> str:
+    """Replace mdcx-incompatible chars with underscore; collapse runs;
+    trim leading/trailing punctuation. Preserves the file extension separator."""
+    out = _UNSAFE_CHARS_RE.sub("_", name)
+    out = re.sub(r"_+", "_", out).strip("_-. ")
+    return out or "unnamed"
+
+
+def _sanitize_target_dir(target: str) -> str:
+    """If the target dir name has unsafe chars, rename it. Returns the
+    (possibly new) absolute path."""
+    p = Path(target)
+    if not p.exists():
+        return target
+    safe_stem = _sanitize_name(p.name)
+    if safe_stem == p.name:
+        return target
+    # On collision, append numeric suffix.
+    new_p = p.parent / safe_stem
+    n = 1
+    while new_p.exists() and new_p.resolve() != p.resolve():
+        n += 1
+        new_p = p.parent / f"{safe_stem}-{n}"
+        if n > 100:
+            log.warning("could not pick safe dir name for %s, leaving as-is", p.name)
+            return target
+    try:
+        p.rename(new_p)
+        log.info("sanitized staging dir: %s → %s", p.name, new_p.name)
+        return str(new_p)
+    except OSError as e:
+        log.warning("dir rename failed (%s); leaving original path", e)
+        return target
+
+
+# Video extensions we'll rename if their basename has unsafe chars. We don't
+# touch images / .nfo / etc. — mdcx's filename regex only runs on these.
+_VIDEO_EXTS_FOR_SANITIZE: frozenset[str] = frozenset({
+    ".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".ts",
+})
+
+
+def _sanitize_video_filenames(target: str) -> list[str]:
+    """Rename top-level video files whose basenames contain unsafe chars.
+
+    Returns a list of human-readable note lines for the audit trail.
+    """
+    base = Path(target)
+    notes: list[str] = []
+    if not base.is_dir():
+        return notes
+    try:
+        children = list(base.iterdir())
+    except OSError as e:
+        log.warning("can't list %s: %s", base, e)
+        return notes
+    for p in children:
+        if not p.is_file() or p.suffix.lower() not in _VIDEO_EXTS_FOR_SANITIZE:
+            continue
+        safe_stem = _sanitize_name(p.stem)
+        if safe_stem == p.stem:
+            continue
+        new_p = p.with_name(f"{safe_stem}{p.suffix}")
+        if new_p.exists() and new_p.resolve() != p.resolve():
+            notes.append(f"skip rename {p.name} → {new_p.name} (target exists)")
+            continue
+        try:
+            p.rename(new_p)
+            notes.append(f"renamed for mdcx: {p.name} → {new_p.name}")
+            log.info("sanitized video file: %s → %s", p.name, new_p.name)
+        except OSError as e:
+            notes.append(f"rename failed: {p.name} ({e})")
+    return notes
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +275,64 @@ async def _qc_and_maybe_retry(
 # Steps 7-8: mdcx + post-cleanup
 # ---------------------------------------------------------------------------
 
+def _parse_mdcx_summary(stdout: str) -> dict:
+    """Pull the {total, success, failed, failed_items} object out of mdcx's
+    stdout. Returns ``{"total": int, "success": int, "failed": int,
+    "failed_items": list}``.
+
+    mdcx (the user's fork) writes a JSON object to stdout when invoked with
+    ``--json``. The object is a single line; if for some reason it's
+    interleaved with other output we still try to find it via brace match.
+    """
+    out = {"total": 0, "success": 0, "failed": 0, "failed_items": []}
+    if not stdout:
+        return out
+    # Try parsing the whole thing; if that fails, find the largest JSON object
+    # by simple brace count.
+    candidates: list[str] = []
+    try:
+        json.loads(stdout)
+        candidates.append(stdout)
+    except (json.JSONDecodeError, ValueError):
+        depth = 0
+        start = -1
+        for i, ch in enumerate(stdout):
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidates.append(stdout[start:i + 1])
+                    start = -1
+    for blob in candidates:
+        try:
+            parsed = json.loads(blob)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and "total" in parsed and "success" in parsed:
+            out["total"] = int(parsed.get("total") or 0)
+            out["success"] = int(parsed.get("success") or 0)
+            out["failed"] = int(parsed.get("failed") or 0)
+            items = parsed.get("failed_items") or []
+            if isinstance(items, list):
+                out["failed_items"] = items[:5]
+            break
+    return out
+
+
 async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
-    """Run mdcx scrape; on success, sweep leftover junk; emit metrics + notify."""
+    """Run mdcx scrape; classify outcome by parsing mdcx's summary; emit
+    metrics + notify accordingly.
+
+    Outcome states:
+      - scraped              : mdcx success >= 1 (genuine win)
+      - scrape_no_match      : mdcx rc=0 but total=0 (silently scanned nothing)
+      - scrape_failed_items  : mdcx rc=0 and total>0 but success=0 (every file
+                                rejected — wrong番号前缀 / no crawler match)
+      - scrape_failed        : mdcx rc != 0 (subprocess error / timeout)
+    """
     store.update(tid, state="scraping", error=None)
     async with m.timed_step("mdcx"):
         result = await scrape_dir(target)
@@ -182,7 +342,34 @@ async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
         m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="skip").inc()
         return
 
-    if result["rc"] == 0:
+    if result["rc"] != 0:
+        # Subprocess error / timeout — bubble up as before.
+        is_timeout = result["rc"] == -1 and "timed out" in (result.get("stderr") or "")
+        m.MDCX_RUN.labels(result="timeout" if is_timeout else "fail").inc()
+        m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="fail").inc()
+        m.PIPELINE_RUN_TOTAL.labels(terminal_state="scrape_failed").inc()
+        store.update(
+            tid, state="scrape_failed", mdcx_result=result,
+            error=(result.get("stderr") or "")[:1000],
+        )
+        log.error("[scrape] task=%s FAILED rc=%s", tid, result["rc"])
+        await notify.notify(
+            "scrape_failed",
+            f"mdcx 刮削失败 (rc={result['rc']}{'/timeout' if is_timeout else ''})",
+            task=tid, name=name[:80],
+            stderr=(result.get("stderr") or "")[:200],
+        )
+        return
+
+    # rc == 0 — but did it actually scrape anything?
+    summary = _parse_mdcx_summary(result.get("stdout") or "")
+    log.info(
+        "[scrape] task=%s mdcx summary: total=%d success=%d failed=%d",
+        tid, summary["total"], summary["success"], summary["failed"],
+    )
+
+    if summary["success"] > 0:
+        # Genuine success path
         m.MDCX_RUN.labels(result="ok").inc()
         m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="ok").inc()
         async with m.timed_step("post_cleanup"):
@@ -202,21 +389,49 @@ async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
         )
         return
 
-    # Non-zero rc — distinguish timeout from generic fail.
-    is_timeout = result["rc"] == -1 and "timed out" in (result.get("stderr") or "")
-    m.MDCX_RUN.labels(result="timeout" if is_timeout else "fail").inc()
+    if summary["total"] == 0:
+        # mdcx ran cleanly but matched 0 video files in target dir.
+        # Common cause: filename has chars mdcx's regex rejects ([4K] / @ / 169bbs.com prefix),
+        # or path contains [] which mdcx's glob misinterprets. Treat as failure
+        # so the user is told instead of silently moving on.
+        m.MDCX_RUN.labels(result="no_match").inc()
+        m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="fail").inc()
+        m.PIPELINE_RUN_TOTAL.labels(terminal_state="scrape_no_match").inc()
+        store.update(
+            tid, state="scrape_no_match", mdcx_result=result,
+            error="mdcx scanned 0 files (filename / path chars may block detection)",
+        )
+        log.warning("[scrape] task=%s NO_MATCH (total=0) at %s", tid, target)
+        await notify.notify(
+            "scrape_no_match",
+            "mdcx 跑完但识别到 0 个视频 — 检查文件名是否含 []/@/前缀",
+            task=tid, name=name[:80], path=target,
+        )
+        return
+
+    # total > 0 and success == 0 → mdcx counted N files but every one rejected.
+    # Typical reason: 番号前缀不在白名单 (SNOS / niche studios) or all crawlers
+    # failed. Show the user the failure reasons so they know what to fix.
+    reasons = [
+        f"{(it.get('path') or '')[-40:]}: {it.get('reason', '?')}"
+        for it in summary["failed_items"][:3]
+    ]
+    reason_summary = " | ".join(reasons) or "(no reasons reported)"
+    m.MDCX_RUN.labels(result="failed_items").inc()
     m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="fail").inc()
-    m.PIPELINE_RUN_TOTAL.labels(terminal_state="scrape_failed").inc()
+    m.PIPELINE_RUN_TOTAL.labels(terminal_state="scrape_failed_items").inc()
     store.update(
-        tid, state="scrape_failed", mdcx_result=result,
-        error=(result.get("stderr") or "")[:1000],
+        tid, state="scrape_failed_items", mdcx_result=result,
+        error=f"mdcx counted {summary['total']} but all failed: {reason_summary}"[:500],
     )
-    log.error("[scrape] task=%s FAILED rc=%s", tid, result["rc"])
+    log.warning(
+        "[scrape] task=%s FAILED_ITEMS total=%d failed=%d: %s",
+        tid, summary["total"], summary["failed"], reason_summary,
+    )
     await notify.notify(
-        "scrape_failed",
-        f"mdcx 刮削失败 (rc={result['rc']}{'/timeout' if is_timeout else ''})",
-        task=tid, name=name[:80],
-        stderr=(result.get("stderr") or "")[:200],
+        "scrape_failed_items",
+        f"mdcx 识别到 {summary['total']} 个文件但全部失败",
+        task=tid, name=name[:80], reason=reason_summary[:200],
     )
 
 
@@ -242,6 +457,15 @@ async def run_pipeline(
     :param retry_handler: callback to invoke on QC failure (qBT path supplies one;
                           cloud-115 path passes None)
     """
+    # Step 0 — sanitize the staging dir name for mdcx compat. Python's Path.glob
+    # treats [] as char classes, and mdcx's Path.walk silently returns empty if
+    # the start path's name is a non-matching glob. We rename eagerly so every
+    # downstream step (triage included) sees the safe path.
+    safe_target = _sanitize_target_dir(target)
+    if safe_target != target:
+        store.update(tid, save_path=safe_target)
+        target = safe_target
+
     # Steps 1-5
     ok, note = await _run_pre_mdcx_pipeline(target, tid)
     if not ok:
@@ -253,6 +477,14 @@ async def run_pipeline(
             task=tid, name=name[:80], reason=note,
         )
         return
+
+    # Step 5b — sanitize the inner video filenames AFTER triage/merge so any
+    # multi-part renames have settled. mdcx's filename regex chokes on ``[4K]``
+    # / ``@`` prefixes (e.g. ``169bbs.com@SNOS-073_[4K].mkv`` is silently
+    # skipped by its name parser even when the dir is fine).
+    sanitize_notes = _sanitize_video_filenames(target)
+    if sanitize_notes:
+        log.info("[scrape] task=%s sanitized %d video filenames", tid, len(sanitize_notes))
 
     # Step 6
     if not await _qc_and_maybe_retry(target, tid, name, failed_hash, retry_handler):
