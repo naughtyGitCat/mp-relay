@@ -238,6 +238,114 @@ def test_call_refreshes_on_token_expired(monkeypatch):
     assert cloud115.load_tokens() == ("new-at", "new-rt")
 
 
+def test_call_refreshes_on_state_false_token_message(monkeypatch):
+    """The 2026-05-01 case: 115 returns HTTP 200 + {state: false, message:
+    "access_token 无效"} instead of raising. The original exception-only
+    handler missed this and surfaced the failure to /health."""
+    _isolated_db(monkeypatch)
+    from app import cloud115
+    cloud115.save_tokens("old-at", "old-rt")
+
+    call_count = {"quota": 0, "refresh": 0}
+
+    async def fake_quota(self, **kw):
+        call_count["quota"] += 1
+        if call_count["quota"] == 1:
+            return {"state": False, "code": 40140116,
+                    "message": "access_token 无效，请刷新后重试"}
+        return {"state": True, "data": {"quota": 1000, "used": 5}}
+
+    async def fake_refresh(payload, **kw):
+        call_count["refresh"] += 1
+        return {"data": {"access_token": "new-at", "refresh_token": "new-rt"}}
+
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.login_refresh_token_open",
+                        AsyncMock(side_effect=fake_refresh))
+
+    out = asyncio.run(cloud115.quota_info())
+    assert call_count["quota"] == 2     # called twice (initial state=false + retry)
+    assert call_count["refresh"] == 1
+    assert out["state"] is True
+    assert cloud115.load_tokens() == ("new-at", "new-rt")
+
+
+def test_call_does_not_loop_on_persistent_state_false(monkeypatch):
+    """If refresh-and-retry STILL gets state=false, return the response —
+    don't infinite-loop refreshing. (Refresh token might be the actually-
+    expired one.)"""
+    _isolated_db(monkeypatch)
+    from app import cloud115
+    cloud115.save_tokens("old-at", "old-rt")
+
+    call_count = {"quota": 0, "refresh": 0}
+
+    async def fake_quota(self, **kw):
+        call_count["quota"] += 1
+        return {"state": False, "code": 40140116, "message": "access_token expired"}
+
+    async def fake_refresh(payload, **kw):
+        call_count["refresh"] += 1
+        return {"data": {"access_token": "new-at", "refresh_token": "new-rt"}}
+
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.login_refresh_token_open",
+                        AsyncMock(side_effect=fake_refresh))
+
+    out = asyncio.run(cloud115.quota_info())
+    assert call_count["quota"] == 2      # initial + 1 retry; NOT infinite
+    assert call_count["refresh"] == 1
+    assert out["state"] is False         # caller sees the persistent failure
+
+
+def test_call_does_not_refresh_on_unrelated_state_false(monkeypatch):
+    """state=false WITHOUT a token-related message → not a token issue,
+    don't burn a refresh on it."""
+    _isolated_db(monkeypatch)
+    from app import cloud115
+    cloud115.save_tokens("at", "rt")
+
+    call_count = {"quota": 0, "refresh": 0}
+
+    async def fake_quota(self, **kw):
+        call_count["quota"] += 1
+        return {"state": False, "code": 99999, "message": "out of quota for today"}
+
+    async def fake_refresh(payload, **kw):
+        call_count["refresh"] += 1
+        return {"data": {"access_token": "x", "refresh_token": "y"}}
+
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.login_refresh_token_open",
+                        AsyncMock(side_effect=fake_refresh))
+
+    asyncio.run(cloud115.quota_info())
+    assert call_count["quota"] == 1
+    assert call_count["refresh"] == 0    # token wasn't the issue, no refresh attempted
+
+
+def test_looks_like_expired_token_response_classification():
+    from app.cloud115 import _looks_like_expired_token_response
+    # Token-related state=false → True
+    assert _looks_like_expired_token_response(
+        {"state": False, "message": "access_token 无效"}
+    )
+    assert _looks_like_expired_token_response(
+        {"state": False, "message": "Token expired, please refresh"}
+    )
+    # Unrelated state=false → False
+    assert not _looks_like_expired_token_response(
+        {"state": False, "message": "quota exceeded"}
+    )
+    # state=true → False (not an error at all)
+    assert not _looks_like_expired_token_response(
+        {"state": True, "data": {}}
+    )
+    # Non-dict → False
+    assert not _looks_like_expired_token_response(None)
+    assert not _looks_like_expired_token_response([])
+
+
 def test_healthcheck_unauthorized_message(monkeypatch):
     _isolated_db(monkeypatch)
     from app import cloud115

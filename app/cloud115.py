@@ -230,25 +230,73 @@ async def _refresh_now(client: P115OpenClient) -> P115OpenClient:
     return P115OpenClient.from_token(at, new_rt)
 
 
+# Token-expired hints from 115. They show up in two places:
+#   - Exception message (HTTP 401, error code 40140116/40140117)
+#   - JSON response body with state=false and message containing "access_token"
+# The second case is what we hit on 2026-05-01 — the API returned a clean
+# HTTP 200 with state=false instead of raising, so the original exception-
+# only handler never refreshed.
 _TOKEN_EXPIRED_MARKERS: tuple[str, ...] = ("40140116", "40140117", "401 ", "expired")
+_TOKEN_EXPIRED_RESP_HINTS: tuple[str, ...] = ("access_token", "token expired", "refresh_token")
+
+
+def _looks_like_expired_token_response(resp: object) -> bool:
+    """Return True if a 115 JSON response indicates an expired access_token.
+
+    115 sometimes returns ``HTTP 200 + {state: false, code: <some>, message:
+    "access_token 无效" / "access_token 过期"}`` instead of raising 401. We
+    have to peek at the body to know to refresh.
+    """
+    if not isinstance(resp, dict):
+        return False
+    if resp.get("state") is not False:
+        return False
+    msg = str(resp.get("message") or resp.get("error") or "").lower()
+    return any(hint.lower() in msg for hint in _TOKEN_EXPIRED_RESP_HINTS)
 
 
 async def _call(method_name: str, *args, **kwargs) -> dict:
-    """Invoke a P115OpenClient method, refreshing tokens once on expiry."""
+    """Invoke a P115OpenClient method, refreshing tokens once on expiry.
+
+    Two refresh paths:
+      1. Method raised an exception whose ``str()`` contains an expired-token
+         marker (HTTP 401, error code 40140116/40140117).
+      2. Method returned a JSON body with ``state=false`` and a message that
+         mentions access_token / token (115 sometimes responds 200 here).
+
+    Either path → refresh once → retry the call.
+    """
     client = _client()
     if client is None:
         raise RuntimeError("115 未授权 — 请先访问 /auth/115 完成扫码授权")
     method = getattr(client, method_name)
+
+    refreshed = False
+
+    # First attempt — handle exception-style expiry.
     try:
-        return await method(*args, async_=True, **kwargs)
+        resp = await method(*args, async_=True, **kwargs)
     except Exception as e:
         msg = str(e)
         if not any(marker in msg for marker in _TOKEN_EXPIRED_MARKERS):
             raise
-        log.info("cloud115 access_token expired (%s), refreshing", msg[:80])
+        log.info("cloud115 access_token expired via exception (%s), refreshing", msg[:80])
         client = await _refresh_now(client)
         method = getattr(client, method_name)
-        return await method(*args, async_=True, **kwargs)
+        refreshed = True
+        resp = await method(*args, async_=True, **kwargs)
+
+    # Second pass — handle state-false expiry only if we haven't already refreshed.
+    if not refreshed and _looks_like_expired_token_response(resp):
+        log.info(
+            "cloud115 access_token expired via state=false (msg=%r), refreshing",
+            (resp.get("message") if isinstance(resp, dict) else "")[:80],
+        )
+        client = await _refresh_now(client)
+        method = getattr(client, method_name)
+        resp = await method(*args, async_=True, **kwargs)
+
+    return resp
 
 
 async def add_offline_url(magnet: str, save_dir_id: str = "") -> dict:
