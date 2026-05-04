@@ -162,6 +162,16 @@ const ownedCount = document.getElementById('owned-count');
 const selected = new Set();
 let activeTab = 'star';   // star | series | studio | genre | director
 
+// JavBus's CDN serves 403 to anything without a Referer:
+// https://www.javbus.com/. Browsers can't be coerced into sending an
+// arbitrary Referer for security reasons, so we route all upstream image
+// URLs through mp-relay's /api/img-proxy which fetches with the right
+// header and streams the bytes back. Same-origin from the browser's POV.
+function imgProxy(url) {
+  if (!url) return '';
+  return '/api/img-proxy?url=' + encodeURIComponent(url);
+}
+
 const TAB_PLACEHOLDERS = {
   star:     '演员名（中/日/英）— 例: 葵つかさ',
   series:   '粘贴 JavBus URL 或输入系列ID — 例: https://www.javbus.com/series/RPC',
@@ -243,7 +253,7 @@ async function searchActors(refresh = false) {
   status.textContent = `找到 ${data.actors.length} 个候选 — 点击选择:`;
   actorsEl.innerHTML = data.actors.map(a => `
     <div class="actor-chip" data-id="${escape(a.id)}">
-      ${a.photo_url ? `<img src="${escape(a.photo_url)}" referrerpolicy="no-referrer">` : '<div style="width:36px;height:36px;background:var(--border);border-radius:50%;"></div>'}
+      ${a.photo_url ? `<img src="${escape(imgProxy(a.photo_url))}" loading="lazy">` : '<div style="width:36px;height:36px;background:var(--border);border-radius:50%;"></div>'}
       <span>${escape(a.name)}</span>
     </div>`).join('');
   actorsEl.querySelectorAll('.actor-chip').forEach(el => {
@@ -260,7 +270,7 @@ async function searchActors(refresh = false) {
 function renderActorChip(a) {
   actorsEl.innerHTML = `
     <div class="actor-chip" style="border-color:var(--accent)">
-      ${a.photo_url ? `<img src="${escape(a.photo_url)}" referrerpolicy="no-referrer">` : ''}
+      ${a.photo_url ? `<img src="${escape(imgProxy(a.photo_url))}" loading="lazy">` : ''}
       <span>${escape(a.name)}</span>
     </div>`;
 }
@@ -281,7 +291,7 @@ async function loadFilms(actorId, refresh) {
 function renderFilms(films) {
   grid.innerHTML = films.map((f, i) => `
     <div class="film ${f.owned ? 'owned' : ''}" data-code="${escape(f.code)}" data-idx="${i}">
-      ${f.cover_url ? `<img class="cover" src="${escape(f.cover_url)}" referrerpolicy="no-referrer" loading="lazy">` : '<div class="cover"></div>'}
+      ${f.cover_url ? `<img class="cover" src="${escape(imgProxy(f.cover_url))}" loading="lazy">` : '<div class="cover"></div>'}
       ${f.owned ? '<span class="badge owned">✓ 已有</span>' : ''}
       <div class="meta">
         <div class="code">${escape(f.code)}</div>
