@@ -79,6 +79,9 @@
     .film:hover { border-color: var(--accent); transform: translateY(-2px); }
     .film.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
     .film.owned { opacity: 0.65; }
+    /* When the floatbar's "隐藏已拥有" toggle is on, drop owned cards from
+       the layout entirely (display:none reflows the grid). */
+    .grid.hide-owned .film.owned { display: none; }
     .film .cover {
       aspect-ratio: 16/10; background: var(--border); display: block;
       object-fit: cover; width: 100%;
@@ -143,6 +146,10 @@
 
   <div id="floatbar">
     <span>已选 <strong id="sel-count">0</strong> 部 / 共 <span id="total-count">0</span>，已拥有 <span id="owned-count">0</span></span>
+    <label style="font-size:12px; color:var(--muted); cursor:pointer; user-select:none;">
+      <input type="checkbox" id="hide-owned-toggle" style="vertical-align:middle; margin-right:4px;">
+      隐藏已拥有
+    </label>
     <button id="bulk-btn" disabled>批量加入 qBT</button>
     <span id="bulk-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
@@ -158,6 +165,20 @@ const floatbar = document.getElementById('floatbar');
 const selCount = document.getElementById('sel-count');
 const totalCount = document.getElementById('total-count');
 const ownedCount = document.getElementById('owned-count');
+const hideOwnedToggle = document.getElementById('hide-owned-toggle');
+
+// Persist the "hide owned" preference. CSS class lives on the grid; the
+// checkbox just toggles it. localStorage so it survives reload.
+const HIDE_OWNED_KEY = 'mp-relay:discover:hide-owned';
+hideOwnedToggle.checked = localStorage.getItem(HIDE_OWNED_KEY) === '1';
+function applyHideOwned() {
+  grid.classList.toggle('hide-owned', hideOwnedToggle.checked);
+}
+applyHideOwned();
+hideOwnedToggle.addEventListener('change', () => {
+  localStorage.setItem(HIDE_OWNED_KEY, hideOwnedToggle.checked ? '1' : '0');
+  applyHideOwned();
+});
 
 const selected = new Set();
 let activeTab = 'star';   // star | series | studio | genre | director
