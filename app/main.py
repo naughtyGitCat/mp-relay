@@ -17,7 +17,7 @@ from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import cloud115, cloud115_watcher, discover, gfriends, jav_search, media_fallback
+from . import cloud115, cloud115_watcher, discover, gfriends, img_proxy, jav_search, media_fallback
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -638,6 +638,35 @@ async def api_gfriends(name: str = ""):
         raise HTTPException(400, "name required")
     url = await gfriends.find_actor_avatar_url(name)
     return {"name": name, "url": url}
+
+
+# ============================================================
+# Hotlinked-image proxy (for JavBus / Bangumi covers etc.)
+# ============================================================
+
+@app.get("/api/img-proxy")
+async def api_img_proxy(url: str):
+    """Fetch an image from a whitelisted hotlink-protected host with the
+    correct Referer, stream it back to the browser. Workaround for JavBus
+    Cloudflare 403-without-Referer + browser inability to set Referer.
+
+    Hosts: see ``img_proxy._ALLOWED_HOSTS`` (javbus / bgm.tv / dmm).
+    Caching: in-process LRU; client also gets ``Cache-Control: max-age=86400``
+    so the browser caches across page loads.
+    """
+    if not url:
+        raise HTTPException(400, "url required")
+    if not img_proxy.is_allowed(url):
+        raise HTTPException(403, "host not on proxy allowlist")
+    result = await img_proxy.fetch(url)
+    if result is None:
+        raise HTTPException(404, "image unavailable")
+    body, content_type = result
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ============================================================
