@@ -554,6 +554,89 @@ async def api_bulk_subscribe(codes_csv: str = Form(...)):
     return {"total": len(codes), "ok": ok_count, "failed": len(codes) - ok_count, "results": results}
 
 
+@app.post("/api/bulk-115")
+async def api_bulk_115(codes_csv: str = Form(...)):
+    """Phase 2 batch path — 115 cloud-offline variant of ``/api/bulk-subscribe``.
+
+    Same auto-pick logic (best_candidate by suspicion/中字/seeders/quality/size),
+    but instead of feeding qBT we push each magnet to 115's offline queue. The
+    ``cloud115_watcher`` background loop will then pull completed downloads back
+    to the local staging dir and dispatch the post-download pipeline — so the
+    only difference vs. qBT from the user's POV is "where the bytes come from".
+
+    Returns the same per-code report shape so the UI can mark each tile.
+    Returns 409 with ``auth_url`` if 115 isn't authorized — so the UI can
+    redirect the user to /auth/115 instead of failing every code in the batch.
+    """
+    if not cloud115.is_authorized():
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "unauthorized",
+                "auth_url": "/auth/115",
+                "hint": "115 还未授权 — 先去 /auth/115 扫码",
+            },
+        )
+
+    codes = [c.strip().upper() for c in codes_csv.split(",") if c.strip()]
+    if not codes:
+        raise HTTPException(400, "codes_csv empty")
+
+    results: list[dict] = []
+    for code in codes:
+        try:
+            candidates = await jav_search.search_jav_code(code, limit=20)
+            best = jav_search.best_candidate(candidates)
+            if not best:
+                results.append({"code": code, "ok": False, "reason": "no candidates"})
+                continue
+
+            resp = await cloud115.add_offline_url(best["magnet"])
+            # Mirror the single-add error handling in /api/cloud115-add: 115 may
+            # return state=False with a quota / dup-task message instead of raising.
+            if isinstance(resp, dict) and resp.get("state") is False:
+                msg = resp.get("message") or resp.get("error_msg") or str(resp)
+                store.add(
+                    kind="cloud_offline_115",
+                    input_text=f"bulk: {code}",
+                    state="cloud_failed",
+                    title=best["title"][:200],
+                    error=msg[:300],
+                )
+                results.append({"code": code, "ok": False, "reason": msg[:200]})
+                continue
+
+            data = resp.get("data") or {}
+            first = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+            info_hash = first.get("info_hash") or best.get("info_hash") or ""
+            name = first.get("name") or best["title"]
+
+            store.add(
+                kind="cloud_offline_115",
+                input_text=f"bulk: {code}",
+                state="submitted_to_115",
+                hash=info_hash,
+                title=(name or code)[:200],
+            )
+            results.append({
+                "code": code, "ok": True,
+                "picked": {
+                    "title": best["title"],
+                    "size": best["size_str"],
+                    "seeders": best["seeders"],
+                    "quality_score": best["quality_score"],
+                    "info_hash": info_hash,
+                    "name": name,
+                },
+            })
+        except Exception as e:
+            log.exception("bulk 115 %s failed: %s", code, e)
+            results.append({"code": code, "ok": False, "reason": str(e)[:200]})
+
+    ok_count = sum(1 for r in results if r["ok"])
+    return {"total": len(codes), "ok": ok_count, "failed": len(codes) - ok_count, "results": results}
+
+
 @app.get("/api/discover/films")
 async def api_discover_films(kind: str = "", id: str = "", url: str = "",
                               refresh: bool = False):

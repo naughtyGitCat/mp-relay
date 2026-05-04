@@ -151,6 +151,7 @@
       隐藏已拥有
     </label>
     <button id="bulk-btn" disabled>批量加入 qBT</button>
+    <button id="bulk-115-btn" disabled>批量加入 115</button>
     <span id="bulk-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
 
@@ -341,23 +342,48 @@ function renderFilms(films) {
 
 function updateFloat() {
   selCount.textContent = selected.size;
-  document.getElementById('bulk-btn').disabled = selected.size === 0;
+  const empty = selected.size === 0;
+  document.getElementById('bulk-btn').disabled = empty;
+  document.getElementById('bulk-115-btn').disabled = empty;
 }
 
-document.getElementById('bulk-btn').addEventListener('click', async () => {
+// Unified bulk dispatch — qBT and 115 share the same UX (POST codes_csv, render
+// per-code result badges). The only differences are endpoint, label, and how
+// we surface the 115 "not authorized" 409.
+async function runBulk({ endpoint, label, badgeText }) {
   if (!selected.size) return;
-  const btn = document.getElementById('bulk-btn');
+  const qbtBtn = document.getElementById('bulk-btn');
+  const c115Btn = document.getElementById('bulk-115-btn');
   const out = document.getElementById('bulk-result');
-  btn.disabled = true;
-  out.textContent = `正在批量搜种并加入 qBT (${selected.size} 部)…`;
+  qbtBtn.disabled = true;
+  c115Btn.disabled = true;
+  out.textContent = `正在批量搜种并加入 ${label} (${selected.size} 部)…`;
 
   const fd = new FormData();
   fd.set('codes_csv', Array.from(selected).join(','));
-  const r = await fetch('/api/bulk-subscribe', { method: 'POST', body: fd });
-  const data = await r.json();
+  let r, data;
+  try {
+    r = await fetch(endpoint, { method: 'POST', body: fd });
+    data = await r.json();
+  } catch (e) {
+    out.textContent = `请求失败: ${e}`;
+    updateFloat();
+    return;
+  }
+
+  // 409 from /api/bulk-115 when token expired / not yet authorized.
+  if (r.status === 409 && data && data.auth_url) {
+    out.innerHTML = `${data.hint || '需要授权'} — <a href="${data.auth_url}" target="_blank">去授权</a>`;
+    updateFloat();
+    return;
+  }
+  if (!r.ok) {
+    out.textContent = `失败 (HTTP ${r.status}): ${(data && data.error) || ''}`;
+    updateFloat();
+    return;
+  }
 
   out.textContent = `完成: ${data.ok}/${data.total} 成功`;
-  // Mark successful ones with a temporary state badge in the grid
   for (const item of data.results || []) {
     const el = grid.querySelector(`.film[data-code="${CSS.escape(item.code)}"]`);
     if (!el) continue;
@@ -366,7 +392,7 @@ document.getElementById('bulk-btn').addEventListener('click', async () => {
     if (item.ok) {
       el.classList.add('owned');
       const b = document.createElement('span'); b.className = 'badge owned';
-      b.textContent = '加入下载'; b.style.background = 'var(--accent)';
+      b.textContent = badgeText; b.style.background = 'var(--accent)';
       el.appendChild(b);
     } else {
       const b = document.createElement('span'); b.className = 'badge';
@@ -378,8 +404,18 @@ document.getElementById('bulk-btn').addEventListener('click', async () => {
   }
   selected.clear();
   updateFloat();
-  btn.disabled = true;
-});
+}
+
+document.getElementById('bulk-btn').addEventListener('click', () => runBulk({
+  endpoint: '/api/bulk-subscribe',
+  label: 'qBT',
+  badgeText: '加入下载',
+}));
+document.getElementById('bulk-115-btn').addEventListener('click', () => runBulk({
+  endpoint: '/api/bulk-115',
+  label: '115',
+  badgeText: '已推 115',
+}));
 
 searchBtn.addEventListener('click', () => doSearch(false));
 refreshBtn.addEventListener('click', () => doSearch(true));
