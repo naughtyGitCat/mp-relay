@@ -148,8 +148,33 @@ async def scrape_dir(path: str, *, json_output: bool = True, quiet: bool = True,
     Returns ``{rc, stdout, stderr}``. ``stdout`` is a synthesized JSON summary
     that matches what ``mdcx scrape dir --json`` *should* have returned, so
     callers (post_download) parse it identically.
+
+    Two empty-dir flavors:
+      - target doesn't exist  → ``"already_scraped"`` flag (mdcx's
+        ``success_file_move`` + ``del_empty_folder`` already moved everything
+        out + cleaned up). Caller should treat as success, not failure.
+      - target exists but has no video files → standard ``total: 0`` so
+        ``post_download._parse_mdcx_summary`` still classifies as
+        ``scrape_no_match`` (genuine: file never landed, or unrecognized ext).
     """
     target = Path(path)
+    if not target.exists():
+        # Strong signal that mdcx already processed this dir: a successful
+        # ``scrape file`` moves the video to ``success_output_folder`` and
+        # ``del_empty_folder=True`` removes the now-empty parent. If we
+        # re-enter on a request to retry, the dir is gone → that's a
+        # *previous-run success*, not a new failure. Without this branch a
+        # retry burst against orphaned-but-completed subprocs (see PR #23
+        # narrative) gets classified as ``scrape_failed`` — happened to 56/63
+        # tasks during the 145-batch recovery before this fix.
+        log.info("mdcx scrape dir: %s already gone (likely previously scraped)", path)
+        return {
+            "rc": 0,
+            "stdout": '{"total": 1, "success": 1, "failed": 0, "failed_items": [], "already_scraped": true}',
+            "stderr": "",
+            "already_scraped": True,
+        }
+
     files = _enumerate_video_files(target)
 
     log.info("mdcx scrape dir: %s (found %d video files)", path, len(files))
