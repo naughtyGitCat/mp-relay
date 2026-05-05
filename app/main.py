@@ -17,7 +17,7 @@ from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import cloud115, cloud115_watcher, discover, gfriends, img_proxy, jav_search, media_fallback
+from . import cloud115, cloud115_watcher, discover, gfriends, img_proxy, jav_search, media_fallback, post_download
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -873,3 +873,66 @@ async def api_cloud115_list(page: int = 1):
     if not cloud115.is_authorized():
         raise HTTPException(409, "115 unauthorized; visit /auth/115")
     return await cloud115.list_offline(page=page)
+
+
+@app.post("/api/cloud115/retry-failed-scrapes")
+async def api_cloud115_retry_failed_scrapes():
+    """Re-run the mdcx step for tasks stuck in ``scrape_no_match`` or
+    ``scrape_failed_items``.
+
+    The file is already on local disk (``save_path`` was recorded when sync
+    succeeded), so we just dispatch ``_scrape_and_postclean`` again. Useful
+    after fixing whatever was making mdcx return total=0 (e.g. the fork's
+    ``manager.load()`` clobbering ``media_path`` — fixed in mp-relay 2026-05-05
+    by switching ``mdcx_runner.scrape_dir`` to per-file ``scrape file``).
+
+    Runs the retries in the background — endpoint returns immediately with
+    a count. State transitions show up in the live tasks table as each
+    completes.
+    """
+    candidate_states = ["scrape_no_match", "scrape_failed_items", "scrape_failed"]
+    rows = store.list_in_states(candidate_states, kind="cloud_offline_115", limit=500)
+    n = 0
+    skipped = 0
+    for r in rows:
+        save_path = r.get("save_path")
+        if not save_path:
+            skipped += 1
+            continue
+        tid = r["id"]
+        name = r.get("title") or "(unknown)"
+        # Bump to processing so the UI reflects "in flight"; watcher won't
+        # touch it (only scans submitted_to_115).
+        store.update(tid, state="processing", error=None)
+        # Fire-and-forget — _scrape_and_postclean writes its own terminal state.
+        asyncio.create_task(
+            post_download._scrape_and_postclean(save_path, tid, name),
+            name=f"retry-scrape-{tid[:8]}",
+        )
+        n += 1
+    return {"requeued": n, "skipped_no_save_path": skipped}
+
+
+@app.post("/api/cloud115/retry-failed-syncs")
+async def api_cloud115_retry_failed_syncs():
+    """Re-queue tasks stuck in ``cloud_sync_failed`` so the watcher picks
+    them up on its next tick.
+
+    Background: if 115's access token expires mid-batch, every queued sync
+    blows up with ``download_url_info_open failed: access_token 无效`` and
+    transitions to ``cloud_sync_failed``. The watcher's pending-state
+    filter is ``submitted_to_115`` only — by design, so a permanently bad
+    task doesn't loop forever — so those failed syncs sit there until
+    something flips them back. This endpoint is that "something". Use it
+    after fixing whatever caused the original failure (token roll, network
+    blip, etc.).
+
+    Returns the count re-queued. Watcher will pick them up within
+    ``cloud115_poll_interval_sec`` seconds (default 60).
+    """
+    rows = store.list_in_states(["cloud_sync_failed"], kind="cloud_offline_115", limit=500)
+    n = 0
+    for r in rows:
+        store.update(r["id"], state="submitted_to_115", error=None)
+        n += 1
+    return {"requeued": n}
