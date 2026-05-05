@@ -376,7 +376,12 @@ _DOWNLOAD_UA: str = (
 async def list_folder_contents(folder_id: str | int) -> list[dict]:
     """List children of a 115 folder. Empty list if it's not a folder
     (file_id pointing at a single file) — caller should treat that as a
-    'singleton' download case."""
+    'singleton' download case.
+
+    Distinguishes "this is a file, not a folder" (returns []) from
+    "token expired" (refreshes + retries). Both surface as state=false,
+    so we sniff the message to tell them apart.
+    """
     client = _client()
     if client is None:
         raise RuntimeError("115 未授权")
@@ -390,8 +395,16 @@ async def list_folder_contents(folder_id: str | int) -> list[dict]:
         else:
             raise
     if isinstance(resp, dict) and resp.get("state") is False:
-        # Often returned when the cid is actually a file, not a folder.
-        return []
+        # Token-expiry leaks here too: refresh once and retry. Anything
+        # else (file-not-folder, missing cid) → return [] as before.
+        if _looks_like_expired_token_response(resp):
+            log.info("fs_files_open returned token-expired state=false; refreshing once")
+            client = await _refresh_now(client)
+            resp = await client.fs_files_open(int(folder_id), async_=True)
+            if isinstance(resp, dict) and resp.get("state") is False:
+                return []
+        else:
+            return []
     return resp.get("data") or []
 
 
@@ -400,20 +413,39 @@ async def get_download_info(pickcode: str) -> dict:
 
     Passes ``user_agent=_DOWNLOAD_UA`` so the signed URL the CDN issues is
     bound to that UA. ``stream_download`` uses the same UA when fetching.
+
+    Token-refresh handling mirrors ``_call`` (PR #19): the token can expire
+    in two surface forms — an exception with a known marker, OR a quiet
+    HTTP-200 ``{state: false, message: "access_token 无效"}``. We retry once
+    on either signal. Without this second branch, batch syncs all blow up
+    the moment the access token rolls (observed: 65/145 in one batch).
     """
     client = _client()
     if client is None:
         raise RuntimeError("115 未授权 — 请先访问 /auth/115 完成扫码授权")
-    method = client.download_url_info_open
+
+    async def _attempt(c: "P115OpenClient") -> dict:
+        return await c.download_url_info_open(
+            {"pick_code": pickcode}, user_agent=_DOWNLOAD_UA, async_=True,
+        )
+
+    refreshed = False
     try:
-        resp = await method({"pick_code": pickcode}, user_agent=_DOWNLOAD_UA, async_=True)
+        resp = await _attempt(client)
     except Exception as e:
         msg = str(e)
         if not any(marker in msg for marker in _TOKEN_EXPIRED_MARKERS):
             raise
         client = await _refresh_now(client)
-        method = client.download_url_info_open
-        resp = await method({"pick_code": pickcode}, user_agent=_DOWNLOAD_UA, async_=True)
+        refreshed = True
+        resp = await _attempt(client)
+
+    # Quiet token-expiry: HTTP 200 + state=false + token-related message.
+    if not refreshed and isinstance(resp, dict) and resp.get("state") is False \
+            and _looks_like_expired_token_response(resp):
+        log.info("download_url_info_open returned token-expired state=false; refreshing once")
+        client = await _refresh_now(client)
+        resp = await _attempt(client)
 
     if not resp.get("state"):
         raise RuntimeError(
