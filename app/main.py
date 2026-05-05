@@ -17,7 +17,7 @@ from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import cloud115, cloud115_watcher, discover, gfriends, img_proxy, jav_search, media_fallback, post_download
+from . import cloud115, cloud115_watcher, cover_refill, discover, gfriends, img_proxy, jav_search, media_fallback, post_download
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -750,6 +750,27 @@ async def api_img_proxy(url: str):
         media_type=content_type,
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+@app.post("/api/cover-refill")
+async def api_cover_refill(
+    root: str = Form(...),
+    dry_run: bool = Form(True),
+    limit: Optional[int] = Form(None),
+):
+    """Refill missing cover images in a Jellyfin library by reading each
+    folder's NFO and pulling the cover from JavDB's CDN.
+
+    Body params (form):
+      - ``root``     — library root, e.g. ``E:/Jav``. Required.
+      - ``dry_run``  — default True; reports what *would* be written.
+      - ``limit``    — cap candidates (useful for first-time spot-check).
+
+    Returns summary + per-folder result. See ``cover_refill.refill_root``.
+    """
+    if not root or not Path(root).is_dir():
+        raise HTTPException(400, f"root must be an existing directory: {root!r}")
+    return await cover_refill.refill_root(root, dry_run=dry_run, limit=limit)
 
 
 # ============================================================
