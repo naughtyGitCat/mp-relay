@@ -85,7 +85,16 @@ MDCX_MODULE=mdcx.cmd.main
 
 ## 部署
 
-见 [`deploy/README.md`](deploy/README.md)。简言之：scp 到 Windows 机，NSSM 包成开机自启服务。
+**推荐**：从 [Releases](https://github.com/naughtyGitCat/mp-relay/releases) 下载最新的
+`mp-relay-Setup-<版本>.exe`，双击安装。安装包自带 Python 运行时 + NSSM，向导默认勾选
+"Install as Windows service"，安装完打开 `.env` 填密码即可。详见
+[`deploy/README.md`](deploy/README.md)。
+
+**开发迭代**：用 [`deploy/install-on-windows.ps1`](deploy/install-on-windows.ps1) 脚本
+（scp 源码到主机 + 创建 venv + 注册服务），改完代码 rsync + restart 服务即可，不用每次发版。
+
+构建 `.exe` 安装器的细节：[`build/README.md`](build/README.md)。打 tag 后 GitHub Actions
+自动 build + 附到 release。
 
 ## 风险提示
 

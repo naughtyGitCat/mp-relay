@@ -1,27 +1,54 @@
 # Deploy mp-relay on a Windows host
 
 Target: a Windows machine running MoviePilot + qBittorrent + mdcx (the fork at `E:\mdcx-src`).
-Replace `<HOST>` with your machine's IP/hostname and `<USER>` with the SSH login user
-in the commands below.
 
-## Layout on the Windows side
+## Two install paths
+
+| Path | When |
+|---|---|
+| **`mp-relay-Setup-<v>.exe`** (Inno Setup installer) | normal install — bundled Python runtime + auto service registration. Get the latest from the [GitHub Releases page](https://github.com/naughtyGitCat/mp-relay/releases). |
+| **`deploy/install-on-windows.ps1`** (this dir) | dev-iteration / scp-from-dev-machine — uses the host's system Python + reuses MoviePilot's nssm. Faster turnaround when hacking on source. |
+
+Build details for the `.exe`: see [`../build/README.md`](../build/README.md).
+
+## Inno Setup `.exe` install (recommended)
+
+1. Download `mp-relay-Setup-<version>.exe` from Releases.
+2. Double-click → wizard. Default `C:\Program Files (x86)\mp-relay\` — or pick any drive with space (E: recommended on this homelab to keep the boot SSD free).
+3. Keep the **Install as Windows service** task checked (default).
+4. Wizard finishes → Notepad opens `.env` automatically. Fill in `MP_PASS`, `QBT_PASS`, mdcx paths, save, close. **The service won't pass /health until you do this.**
+5. `services.msc → mp-relay → Start` (or `Restart-Service mp-relay`). Open `http://localhost:5000`.
+
+Upgrades: just run the new installer over the existing install. `.env` and `state.db` survive untouched. The wizard stops the running service before file copy and restarts it after.
+
+Uninstall: `Add or Remove Programs → mp-relay → Uninstall`. Removes app + service. `.env` and `state.db` are kept by default — delete `C:\Program Files (x86)\mp-relay\` manually for a clean slate.
+
+## Layout (matches both install paths)
 
 ```
-E:\mp-relay\
-├── app\              ← Python source
+<install-dir>\           ← C:\Program Files (x86)\mp-relay (.exe) or E:\mp-relay (ps1)
+├── app\                 ← Python source
 ├── templates\
-├── .venv\            ← created by deploy script
-├── .env              ← config (copy from .env.example, fill in)
-├── state.db          ← runtime SQLite (auto-created)
-└── nssm.exe          ← reuse the one from MoviePilot install (or copy)
+├── Python\              ← bundled runtime (.exe install) or .venv\ (ps1 install)
+├── .env                 ← config (copy from .env.example, fill in passwords)
+├── state.db             ← runtime SQLite (auto-created on first run)
+├── nssm.exe             ← bundled (.exe) or reused from MoviePilot (ps1)
+├── service-install.ps1
+├── service-uninstall.ps1
+├── service-logs\        ← stdout.log + stderr.log (10 MB rotation)
+└── mp-relay.bat         ← foreground launcher (used when service mode unchecked)
 ```
 
-(Originally deployed at `C:\mp-relay\`; moved to `E:\` on 2026-04-29 to free up
-the system drive. Pick whichever drive has more free space + isn't your boot SSD.)
+## Dev-iteration install (PS1 path)
 
-## Steps (one-shot)
+For when you're hacking on source and don't want to bump a release tag every time. Bigger differences vs the .exe path:
 
-The script `deploy/install-on-windows.ps1` does all of this in one go. From your dev machine:
+- Uses the host's **system Python** (must be 3.11+) — saves bundling
+- Creates a **`.venv\`** instead of using a frozen `Python\` tree
+- **Reuses** `C:\Program Files (x86)\MoviePilot\nssm.exe` instead of bundling
+- Runs from `E:\mp-relay` rather than `Program Files`
+
+Steps:
 
 ```bash
 # 1. scp the project

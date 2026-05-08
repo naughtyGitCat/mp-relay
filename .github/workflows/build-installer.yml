@@ -1,0 +1,139 @@
+name: Build Windows installer
+
+# Triggered on tag push (v*) — produces a single
+# mp-relay-Setup-<version>.exe and attaches it to the GitHub Release for the tag.
+#
+# Manual run via workflow_dispatch is also supported for testing — won't
+# create a release, just uploads the .exe as an artifact.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string for the installer (e.g. 2.0.0.test)"
+        default: "0.0.0.dev"
+        required: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version string
+        id: ver
+        shell: pwsh
+        run: |
+          # On tag push: strip the 'v' prefix → 2.0.0
+          # On manual run: use the workflow_dispatch input
+          if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
+            $v = $env:GITHUB_REF.Substring("refs/tags/v".Length)
+          } else {
+            $v = "${{ inputs.version }}"
+          }
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          echo "Resolved version: $v"
+
+      - name: Set up bundled Python (full distribution, not embed-zip)
+        # The full distribution lets us ship a working pip + a no-surprises
+        # site-packages. embed-zip is smaller but breaks several stdlib
+        # imports — see build/README.md for rationale.
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Locate the system Python install dir
+        id: pyloc
+        shell: pwsh
+        run: |
+          # `setup-python` places Python under hostedtoolcache; we want the
+          # full directory tree, not just the wrapper, so robocopy can clone it.
+          $pyDir = (Get-Command python).Source | Split-Path -Parent
+          echo "dir=$pyDir" >> $env:GITHUB_OUTPUT
+          echo "Python install dir: $pyDir"
+
+      - name: Stage Python runtime into build/Python/
+        shell: pwsh
+        run: |
+          $src = "${{ steps.pyloc.outputs.dir }}"
+          $dst = "build\Python"
+          # /E recurse, /XD exclude dirs, /NFL/NDL/NP minimal output
+          robocopy $src $dst /E /XD __pycache__ Doc /NFL /NDL /NP
+          # robocopy returns 0–7 for success codes — anything ≥ 8 is a failure.
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          $LASTEXITCODE = 0
+          # Sanity check
+          if (-not (Test-Path "$dst\python.exe")) {
+            Write-Error "Failed to stage Python runtime"
+            exit 1
+          }
+
+      - name: Pre-install dependencies into build/Python/Lib/site-packages
+        shell: pwsh
+        run: |
+          # This is the bit that makes the installer self-contained: deps
+          # land inside the bundled Python so user installs don't need pip /
+          # network / SSL trust.
+          & "build\Python\python.exe" -m pip install --upgrade pip --no-warn-script-location
+          & "build\Python\python.exe" -m pip install -r requirements.txt --no-warn-script-location
+          # Verify the most-imported runtime modules actually load
+          & "build\Python\python.exe" -c "import fastapi, uvicorn, httpx, p115client, lxml, bs4; print('deps OK')"
+
+      - name: Verify committed nssm.exe
+        # We commit nssm.exe under build/nssm.exe so neither local builds
+        # nor CI need to re-fetch it. SHA matches the binary used by
+        # windows-moviepilot (which has been in production for ~1 year).
+        shell: pwsh
+        run: |
+          $expected = "f689ee9af94b00e9e3f0bb072b34caaf207f32dcb4f5782fc9ca351df9a06c97"
+          $actual = (Get-FileHash build\nssm.exe -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            Write-Error "nssm.exe SHA mismatch. expected=$expected actual=$actual"
+            exit 1
+          }
+          Write-Host "nssm.exe SHA OK"
+
+      - name: Install Inno Setup 6
+        # The runner doesn't have it preinstalled; choco does.
+        shell: pwsh
+        run: |
+          choco install innosetup --version=6.2.2 --no-progress -y
+          # iscc.exe lives in: C:\Program Files (x86)\Inno Setup 6\
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Error "Inno Setup not found at $iscc after install"
+            exit 1
+          }
+          echo "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          cd build
+          & "$env:ISCC" "/DMyAppVersion=$version" build.iss
+          if (-not (Test-Path "exe\mp-relay-Setup-$version.exe")) {
+            Write-Error "Inno Setup did not produce the expected .exe"
+            exit 1
+          }
+          Get-Item "exe\mp-relay-Setup-$version.exe" | Format-List FullName, Length
+
+      - name: Upload artifact (always — useful for workflow_dispatch builds)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mp-relay-installer-${{ steps.ver.outputs.version }}
+          path: build/exe/mp-relay-Setup-*.exe
+          retention-days: 30
+
+      - name: Attach to GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/exe/mp-relay-Setup-*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
