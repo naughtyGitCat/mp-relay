@@ -1,39 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    autounattend.xml for Win11 24H2 (build 26100) integration test.
+    Win11 24H2 autounattend.xml — MINIMAL version for bisecting.
+    Strategy: start from the absolute minimum that gets through install,
+    add features back one at a time so we can identify what causes the
+    boot loop we hit with the original "feature-rich" version.
 
-    Drives the entire OS install + OOBE without human input. Mounted by
-    Packer as a secondary CD; Win11 setup auto-detects autounattend.xml
-    on any attached CD/USB.
+    Currently included:
+      - Disk partitioning (EFI + MSR + Windows)
+      - Install image by INDEX (locale-neutral, was the first bug)
+      - Skip OOBE screens
+      - Create local admin "packer" / "Packerpass1!" with autologon
+      - One simple FirstLogonCommand: drop a marker file so we can verify
+        autologon + FirstLogonCommands fired
 
-    Behaviour:
-      - Wipes disk 0, creates EFI + MSR + Windows partitions
-      - Installs "Windows 11 Pro" edition
-      - Skips license / OEM / wireless / online-account screens
-      - Creates local admin "packer" with PlainText password
-        (test VM only — never use in prod)
-      - Auto-logon 3 times so FirstLogonCommands can run unattended
-      - Enables WinRM (HTTP, basic auth, unencrypted) so Packer can talk
-        to the VM as soon as the user logs in
-      - Disables firewall on all profiles to make WinRM reachable from
-        the host without further fiddling
-
-    Win11 24H2 specifics:
-      - <RunSynchronousCommand> in the specialize pass writes
-        HKLM\...\OOBE\BypassNRO=1, which makes the new "let's connect to
-        a network" OOBE step exit non-interactively (fallback to local
-        account). HideOnlineAccountScreens=true alone isn't enough on
-        24H2 — the BypassNRO reg is the supported workaround.
-      - generic Pro key VK7JG-NPHTM-C97JM-9MPGT-3V66T lets setup pass
-        product-key OOBE without UI; Windows still prompts for activation
-        later but our VM is throwaway.
+    Cut out (will add back if minimal works):
+      - BypassNRO reg write (HideOnlineAccountScreens=true might suffice)
+      - HideLocalAccountScreen (suspect -- not in standard 24H2 schema)
+      - WinRM enable + firewall disable + Defender off
+      - International-Core in oobeSystem (kept only in windowsPE)
 -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
 
-  <!-- ====================================================================
-       PASS 1: windowsPE — runs from Setup boot environment
-       Picks language/locale, partitions disk, picks edition.
-  ===================================================================== -->
   <settings pass="windowsPE">
     <component name="Microsoft-Windows-International-Core-WinPE"
                processorArchitecture="amd64"
@@ -54,81 +41,17 @@
                publicKeyToken="31bf3856ad364e35"
                language="neutral"
                versionScope="nonSxS">
-      <DiskConfiguration>
-        <Disk wcm:action="add">
-          <CreatePartitions>
-            <CreatePartition wcm:action="add">
-              <Order>1</Order>
-              <Type>EFI</Type>
-              <Size>300</Size>
-            </CreatePartition>
-            <CreatePartition wcm:action="add">
-              <Order>2</Order>
-              <Type>MSR</Type>
-              <Size>16</Size>
-            </CreatePartition>
-            <CreatePartition wcm:action="add">
-              <Order>3</Order>
-              <Type>Primary</Type>
-              <Extend>true</Extend>
-            </CreatePartition>
-          </CreatePartitions>
-          <ModifyPartitions>
-            <ModifyPartition wcm:action="add">
-              <Format>FAT32</Format>
-              <Label>SYSTEM</Label>
-              <Order>1</Order>
-              <PartitionID>1</PartitionID>
-            </ModifyPartition>
-            <ModifyPartition wcm:action="add">
-              <Order>2</Order>
-              <PartitionID>2</PartitionID>
-            </ModifyPartition>
-            <ModifyPartition wcm:action="add">
-              <Format>NTFS</Format>
-              <Label>WINDOWS</Label>
-              <Letter>C</Letter>
-              <Order>3</Order>
-              <PartitionID>3</PartitionID>
-            </ModifyPartition>
-          </ModifyPartitions>
-          <DiskID>0</DiskID>
-          <WillWipeDisk>true</WillWipeDisk>
-        </Disk>
-      </DiskConfiguration>
-
-      <ImageInstall>
-        <OSImage>
-          <InstallFrom>
-            <MetaData wcm:action="add">
-              <Key>/IMAGE/NAME</Key>
-              <Value>Windows 11 Pro</Value>
-            </MetaData>
-          </InstallFrom>
-          <InstallTo>
-            <DiskID>0</DiskID>
-            <PartitionID>3</PartitionID>
-          </InstallTo>
-        </OSImage>
-      </ImageInstall>
-
+      <!-- No DiskConfiguration / ImageInstall — let setup auto-partition
+           and auto-install the only image. Helps bisect whether one of
+           those was the boot-loop trigger. -->
       <UserData>
         <AcceptEula>true</AcceptEula>
         <FullName>Packer</FullName>
         <Organization>mp-relay-test</Organization>
-        <ProductKey>
-          <!-- Win11 Pro generic OOBE key — bypasses key prompt, doesn't activate -->
-          <Key>VK7JG-NPHTM-C97JM-9MPGT-3V66T</Key>
-          <WillShowUI>OnError</WillShowUI>
-        </ProductKey>
       </UserData>
     </component>
   </settings>
 
-  <!-- ====================================================================
-       PASS 2: specialize — runs once after install, before first boot
-       Sets hostname + bypasses Win11 24H2's network OOBE step.
-  ===================================================================== -->
   <settings pass="specialize">
     <component name="Microsoft-Windows-Shell-Setup"
                processorArchitecture="amd64"
@@ -138,39 +61,9 @@
       <ComputerName>MPRELAYTEST</ComputerName>
       <TimeZone>China Standard Time</TimeZone>
     </component>
-
-    <component name="Microsoft-Windows-Deployment"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS">
-      <RunSynchronous>
-        <RunSynchronousCommand wcm:action="add">
-          <Order>1</Order>
-          <Description>Bypass Win11 24H2 forced-network OOBE step</Description>
-          <Path>reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
-        </RunSynchronousCommand>
-      </RunSynchronous>
-    </component>
   </settings>
 
-  <!-- ====================================================================
-       PASS 3: oobeSystem — runs at first user logon
-       Skips remaining OOBE screens, creates packer admin account,
-       enables auto-logon + WinRM for Packer's communicator.
-  ===================================================================== -->
   <settings pass="oobeSystem">
-    <component name="Microsoft-Windows-International-Core"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS">
-      <InputLocale>en-US</InputLocale>
-      <SystemLocale>en-US</SystemLocale>
-      <UILanguage>en-US</UILanguage>
-      <UserLocale>en-US</UserLocale>
-    </component>
-
     <component name="Microsoft-Windows-Shell-Setup"
                processorArchitecture="amd64"
                publicKeyToken="31bf3856ad364e35"
@@ -181,7 +74,6 @@
         <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
         <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
-        <HideLocalAccountScreen>true</HideLocalAccountScreen>
         <NetworkLocation>Work</NetworkLocation>
         <ProtectYourPC>3</ProtectYourPC>
         <SkipMachineOOBE>true</SkipMachineOOBE>
@@ -192,14 +84,11 @@
         <LocalAccounts>
           <LocalAccount wcm:action="add">
             <Password>
-              <!-- PlainText=true so we don't have to base64-encode UTF-16-LE
-                   of "Password" + the literal pass. Test VM only. -->
               <Value>Packerpass1!</Value>
               <PlainText>true</PlainText>
             </Password>
             <Group>Administrators</Group>
             <Name>packer</Name>
-            <DisplayName>Packer</DisplayName>
           </LocalAccount>
         </LocalAccounts>
       </UserAccounts>
@@ -211,37 +100,14 @@
           <PlainText>true</PlainText>
         </Password>
         <Enabled>true</Enabled>
-        <!-- LogonCount=3 lets FirstLogonCommands re-run if anything fails on
-             attempt 1 (some commands need network, which may not be ready
-             on first boot). Subsequent logins behave normally. -->
-        <LogonCount>3</LogonCount>
+        <LogonCount>1</LogonCount>
       </AutoLogon>
 
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Description>Disable firewall on all profiles for WinRM access</Description>
-          <CommandLine>powershell.exe -ExecutionPolicy Bypass -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"</CommandLine>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>2</Order>
-          <Description>Enable PowerShell remoting + WinRM</Description>
-          <CommandLine>powershell.exe -ExecutionPolicy Bypass -Command "Enable-PSRemoting -Force -SkipNetworkProfileCheck"</CommandLine>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
-          <Description>Allow basic auth so Packer's WinRM communicator works</Description>
-          <CommandLine>cmd.exe /c "winrm set winrm/config/service/auth @{Basic=\"true\"}"</CommandLine>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>4</Order>
-          <Description>Allow unencrypted (HTTP) WinRM — local-network test VM only</Description>
-          <CommandLine>cmd.exe /c "winrm set winrm/config/service @{AllowUnencrypted=\"true\"}"</CommandLine>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>5</Order>
-          <Description>Disable Windows Defender real-time scanning to speed up provisioner</Description>
-          <CommandLine>powershell.exe -ExecutionPolicy Bypass -Command "Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue"</CommandLine>
+          <Description>Marker file so we can confirm autologon + FirstLogon ran</Description>
+          <CommandLine>cmd.exe /c "echo autologon-ok &gt; C:\Users\packer\Desktop\autologon-ran.txt"</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>

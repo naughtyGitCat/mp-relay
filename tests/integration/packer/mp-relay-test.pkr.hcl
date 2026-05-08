@@ -85,21 +85,49 @@ source "hyperv-iso" "mp_relay_test" {
   disk_size        = var.disk_size_mb
 
   switch_name        = var.switch_name
-  enable_secure_boot = true
+  // Secure Boot OFF for the test VM. UUP-built Win11 24H2 ISOs (the only
+  // way to get a fresh ISO post-Sept-2024 without a TechBench / VL key)
+  // ship a bootmgr signed with a cert chain that Hyper-V's
+  // MicrosoftWindows template still rejects -> "boot loader failed"
+  // at UEFI POST. With Secure Boot OFF the ISO loads cleanly. Win11
+  // setup itself doesn't strictly require Secure Boot at install time;
+  // it warns but proceeds, and our autounattend skips that warning.
+  enable_secure_boot = false
   enable_tpm         = true
-  // Hyper-V's default vTPM key protector — required for Win11 setup
-  // to pass the TPM check; equivalent to what Hyper-V Manager does
-  // when you click "Enable TPM" on a Gen2 VM.
+  // vTPM is still on so Win11 setup's TPM 2.0 check passes; equivalent
+  // to clicking "Enable TPM" on a Gen2 VM in Hyper-V Manager.
 
   output_directory     = var.output_dir
   shutdown_command     = "shutdown /s /t 10 /f /d p:4:1 /c \"Packer shutdown\""
   shutdown_timeout     = "10m"
 
-  // CD with autounattend.xml — Packer auto-builds the ISO from these
-  // files and mounts it as a second DVD drive. Win11 setup picks up
-  // autounattend.xml from any attached optical drive.
-  cd_files  = ["./autounattend.xml"]
-  cd_label  = "PROVISION"
+  // Windows 11 ISO bootloader shows "Press any key to boot from CD or DVD"
+  // for ~5-6 seconds before falling through. The prompt appears AFTER
+  // UEFI POST + bootmgr load, which on Hyper-V Gen2 takes ~7-9 seconds
+  // from VM start. Need boot_wait long enough to get past UEFI but not
+  // miss the prompt window. 8s + a wide spray of keystrokes catches it.
+  // (Verified empirically by screenshotting at boot_wait=3s and seeing
+  // the prompt arrive after our keystrokes had already been sent.)
+  boot_wait = "8s"
+  boot_command = [
+    "<enter><wait500ms>",
+    "<enter><wait500ms>",
+    "<enter><wait500ms>",
+    "<enter><wait500ms>",
+    "<enter><wait500ms>",
+    "<enter><wait500ms>",
+    "<enter><wait500ms>",
+    "<enter>",
+  ]
+
+  // Secondary ISO containing autounattend.xml. We pre-build this on the
+  // dev machine (`hdiutil makehybrid -o autounattend.iso -iso -joliet
+  // -default-volume-name PROVISION ./autounattend-files/`) and ship the
+  // ready ISO alongside the .pkr.hcl. Originally tried Packer's
+  // ``cd_files`` (auto-builds the ISO at run time) but it requires
+  // oscdimg/mkisofs/xorriso/hdiutil on the Hyper-V host — none of which
+  // ship on a stock Win11 host. Pre-building avoids that dependency.
+  secondary_iso_images = ["./autounattend.iso"]
 
   // First boot has the install + reboots; we wait for WinRM with
   // generous timeout so disk + reboot quirks don't fail the build.
