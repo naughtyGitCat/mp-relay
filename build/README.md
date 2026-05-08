@@ -61,14 +61,29 @@ with importing some stdlib modules and pip in particular. mp-relay ships only
 ~80 MB of Python install size for a robust install isn't a big deal. The
 windows-moviepilot installer uses the same approach for the same reason.
 
-## What the installer does NOT bundle
+## What the installer bundles vs doesn't
 
-- **MoviePilot / qBittorrent** — already in the user's homelab stack
-- **state.db** — created on first run; preserved across upgrades
-- **.env** — copied from `.env.example` on first install only; preserved across upgrades
+**Bundled** (in the .exe payload):
+- mp-relay app + templates (~2 MB)
+- Python 3.12 runtime + deps (~50 MB)
+- NSSM 2.24 (320 KB)
+- **Windows-MoviePilot installer** (~124 MB) — fetched fresh from the
+  latest release of `naughtyGitCat/Windows-MoviePilot` at CI build time,
+  staged as `build/MoviePilot-V2-Setup.exe`. User opts into running it
+  via the wizard's "Install bundled MoviePilot" task (default unchecked).
+
+**Lazy-installed** (downloaded on demand by `setup-mdcx.ps1`):
+- mdcx + Python 3.13 + deps + Chromium (~300 MB) — too big to bundle;
+  see "mdcx — bundled lazily" below.
+
+**Not touched** (user/runtime state):
+- `state.db` — created on first run; preserved across upgrades
+- `.env` — copied from `.env.example` on first install only; preserved
+  across upgrades
 
 `build.iss` warns at install time if `MoviePilot` isn't visible at default
-paths — soft warning, the user can dismiss if it lives elsewhere.
+paths — soft warning, the user can dismiss if it lives elsewhere or they
+plan to use the bundled installer.
 
 ### mdcx — bundled lazily, not in the .exe
 
