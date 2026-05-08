@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Win11 24H2 autounattend.xml — MINIMAL version for bisecting.
+    Strategy: start from the absolute minimum that gets through install,
+    add features back one at a time so we can identify what causes the
+    boot loop we hit with the original "feature-rich" version.
+
+    Currently included:
+      - Disk partitioning (EFI + MSR + Windows)
+      - Install image by INDEX (locale-neutral, was the first bug)
+      - Skip OOBE screens
+      - Create local admin "packer" / "Packerpass1!" with autologon
+      - One simple FirstLogonCommand: drop a marker file so we can verify
+        autologon + FirstLogonCommands fired
+
+    Cut out (will add back if minimal works):
+      - BypassNRO reg write (HideOnlineAccountScreens=true might suffice)
+      - HideLocalAccountScreen (suspect -- not in standard 24H2 schema)
+      - WinRM enable + firewall disable + Defender off
+      - International-Core in oobeSystem (kept only in windowsPE)
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35"
+               language="neutral"
+               versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>en-US</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>0409:00000409</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Setup"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35"
+               language="neutral"
+               versionScope="nonSxS">
+      <!-- No DiskConfiguration / ImageInstall — let setup auto-partition
+           and auto-install the only image. Helps bisect whether one of
+           those was the boot-loop trigger. -->
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <FullName>Packer</FullName>
+        <Organization>mp-relay-test</Organization>
+      </UserData>
+    </component>
+  </settings>
+
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35"
+               language="neutral"
+               versionScope="nonSxS">
+      <ComputerName>MPRELAYTEST</ComputerName>
+      <TimeZone>China Standard Time</TimeZone>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35"
+               language="neutral"
+               versionScope="nonSxS">
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <NetworkLocation>Work</NetworkLocation>
+        <ProtectYourPC>3</ProtectYourPC>
+        <SkipMachineOOBE>true</SkipMachineOOBE>
+        <SkipUserOOBE>true</SkipUserOOBE>
+      </OOBE>
+
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Password>
+              <Value>Packerpass1!</Value>
+              <PlainText>true</PlainText>
+            </Password>
+            <Group>Administrators</Group>
+            <Name>packer</Name>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+
+      <AutoLogon>
+        <Username>packer</Username>
+        <Password>
+          <Value>Packerpass1!</Value>
+          <PlainText>true</PlainText>
+        </Password>
+        <Enabled>true</Enabled>
+        <LogonCount>1</LogonCount>
+      </AutoLogon>
+
+      <FirstLogonCommands>
+        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>Marker file so we can confirm autologon + FirstLogon ran</Description>
+          <CommandLine>cmd.exe /c "echo autologon-ok &gt; C:\Users\packer\Desktop\autologon-ran.txt"</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+
+</unattend>

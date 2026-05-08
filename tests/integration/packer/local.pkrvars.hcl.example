@@ -1,0 +1,6 @@
+// Copy to local.pkrvars.hcl and fill in for your host. The .gitignore
+// excludes local.pkrvars.hcl so per-host paths never get committed.
+
+iso_path       = "I:/Hyper-V/iso/uupdump-26100.8328-zh-cn-pro/26100.8328.260427-1721.GE_RELEASE_SVC_PROD3_CLIENTPRO_OEMRET_X64FRE_ZH-CN.ISO"
+installer_path = "I:/Hyper-V/mp-relay-Setup-0.5.0.test.exe"
+output_dir     = "I:/Hyper-V/packer-output/mp-relay-test"
