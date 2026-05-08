@@ -72,6 +72,11 @@ Name: "english";      MessagesFile: "compiler:Default.isl"
 ; to inspect logs interactively can uncheck and use the desktop launcher.
 Name: "service";     Description: "Install as Windows service (auto-start on boot)"; GroupDescription: "Service"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; Lazy-setup task: optionally bootstrap mdcx (uv + Python 3.13 + ~250 MB
+; deps + headless Chromium ~150 MB) right after install. Unchecked by
+; default — fast install path stays fast; user can opt in here, or run
+; "Setup mdcx" Start-Menu shortcut later.
+Name: "setupmdcx";   Description: "Set up mdcx now (downloads ~300 MB, takes ~5 minutes)"; GroupDescription: "Optional: scrape pipeline"; Flags: unchecked
 
 [Files]
 ; --- mp-relay Python source. Excludes development cruft + the user's local
@@ -101,10 +106,14 @@ Source: "launcher.bat";          DestDir: "{app}"; DestName: "{#MyAppExeName}"; 
 Source: "nssm.exe";              DestDir: "{app}"; Flags: ignoreversion
 Source: "service-install.ps1";   DestDir: "{app}"; Flags: ignoreversion
 Source: "service-uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "setup-mdcx.ps1";        DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{group}\Edit config (.env)";     Filename: "notepad.exe"; Parameters: """{app}\.env"""
+Name: "{group}\Setup mdcx (run once)";  Filename: "powershell.exe"; \
+    Parameters: "-ExecutionPolicy Bypass -NoProfile -NoExit -File ""{app}\setup-mdcx.ps1"" -InstallDir ""{app}"""; \
+    Comment: "Bootstrap mdcx (uv + Python 3.13 + Chromium ~300 MB total). Run once after install."
 Name: "{group}\Open install folder";    Filename: "{app}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
@@ -123,6 +132,16 @@ Filename: "powershell.exe"; \
     StatusMsg: "Installing Windows service..."; \
     Tasks: service; \
     Flags: runhidden waituntilterminated
+
+; If user opted into mdcx setup: run setup-mdcx.ps1 in a visible console so
+; they can watch the ~300 MB download. waituntilterminated keeps the wizard's
+; "Finish" button gated until setup actually finishes — important because
+; the next [Run] step (.env editor) shouldn't open before MDCX_DIR is in there.
+Filename: "powershell.exe"; \
+    Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup-mdcx.ps1"" -InstallDir ""{app}"" -NoServiceRestart"; \
+    StatusMsg: "Bootstrapping mdcx (downloading ~300 MB, please wait)..."; \
+    Tasks: setupmdcx; \
+    Flags: waituntilterminated
 
 ; If NOT service mode: offer to launch interactively after install.
 Filename: "{app}\{#MyAppExeName}"; \
@@ -143,8 +162,13 @@ Type: filesandordirs; Name: "{app}\service-stdout.log"
 Type: filesandordirs; Name: "{app}\service-stderr.log"
 Type: filesandordirs; Name: "{app}\service-stdout.log.*"
 Type: filesandordirs; Name: "{app}\service-stderr.log.*"
+Type: filesandordirs; Name: "{app}\service-logs"
 Type: filesandordirs; Name: "{app}\Python\Lib\site-packages\__pycache__"
 Type: filesandordirs; Name: "{app}\Python\__pycache__"
+; mdcx tree (created by setup-mdcx.ps1, not by this installer's [Files]).
+; Includes its .venv, browsers/, .git, ~300 MB total. Without this rule,
+; uninstall leaves it behind because Inno only auto-removes what it placed.
+Type: filesandordirs; Name: "{app}\mdcx"
 
 [Code]
 { Stop the service before file copy on upgrade — locked python.exe / .pyd

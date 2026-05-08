@@ -63,14 +63,43 @@ windows-moviepilot installer uses the same approach for the same reason.
 
 ## What the installer does NOT bundle
 
-- **mdcx** (`E:\mdcx-src`) — the user installs the fork separately
 - **MoviePilot / qBittorrent** — already in the user's homelab stack
 - **state.db** — created on first run; preserved across upgrades
 - **.env** — copied from `.env.example` on first install only; preserved across upgrades
 
-`build.iss` warns at install time if `E:\mdcx-src` or `MoviePilot` aren't
-visible at default paths — soft warning, the user can dismiss if they live
-elsewhere or on remote hosts.
+`build.iss` warns at install time if `MoviePilot` isn't visible at default
+paths — soft warning, the user can dismiss if it lives elsewhere.
+
+### mdcx — bundled lazily, not in the .exe
+
+mdcx requires Python 3.13.4+, ships ~250 MB of Python deps (pyqt5, av,
+patchright, openai, curl-cffi, ...) plus a ~150 MB headless Chromium for
+patchright. Bundling all that would push the installer from 56 MB to
+~300 MB and slow CI from 2 min to ~6 min, much of which is duplicated
+across releases.
+
+Instead the installer ships a small `setup-mdcx.ps1` (~7 KB) that the
+user runs once on first install. It bootstraps the full mdcx environment:
+
+  1. Installs `uv` (the Astral Python+package manager) if missing
+  2. Clones `naughtyGitCat/mdcx` into `{install-dir}\mdcx\`
+     (zipball fallback if `git` isn't on PATH)
+  3. `uv sync --no-dev` — auto-installs Python 3.13 + mdcx runtime deps
+  4. `patchright install chromium` (browsers land at
+     `{install-dir}\mdcx\browsers\` so uninstall takes them with it)
+  5. Auto-detects which CLI module to invoke (`mdcx.cmd.main` or
+     `mdcx.cmd.crawl`) and patches mp-relay's `.env` accordingly
+  6. Restarts the mp-relay service so the new MDCX paths take effect
+
+User-facing entry points:
+
+- **Wizard task** "Set up mdcx now (downloads ~300 MB...)" — unchecked
+  by default. Tick it during install for one-shot setup.
+- **Start Menu shortcut** "Setup mdcx (run once)" — for after-install
+  invocation. Idempotent — re-runs are cheap (`git pull` + `uv sync`).
+
+The script accepts `-MdcxRepo` / `-MdcxRef` to point at a different fork
+or branch. Default is the user's `naughtyGitCat/mdcx` master.
 
 ## Service mode default
 
