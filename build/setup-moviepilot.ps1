@@ -1,87 +1,128 @@
-# Run the bundled Windows-MoviePilot installer.
+﻿# Download + run the latest Windows-MoviePilot installer.
 #
-# The .exe was downloaded at CI build time from the latest release of
-# naughtyGitCat/Windows-MoviePilot and shipped as part of mp-relay's
-# install payload. This script just wraps the spawn so the user gets:
+# Fetches the most-recent release of naughtyGitCat/Windows-MoviePilot
+# from GitHub at runtime and spawns its installer. Lives outside the
+# mp-relay installer (which used to bundle the .exe at build time --
+# moved to download-on-demand to keep mp-relay's installer at ~56 MB
+# and decouple from Windows-MoviePilot's release cadence).
 #
-#   - A clean console showing what's about to happen
-#   - Auto-detection of an existing install (skip if MoviePilot service
-#     is already registered + running)
-#   - Optional silent mode (-Silent) for unattended pipelines
-#
-# Re-runnable: the bundled .exe is itself idempotent (Inno Setup
-# detects the previous AppId and offers upgrade-in-place).
+# Idempotent: detects an already-running MoviePilot service and offers
+# to skip. Both the in-app /setup wizard and the Start Menu shortcut
+# call this script.
 
 [CmdletBinding()]
 param(
     [string]$InstallDir = $PSScriptRoot,
     [switch]$Silent,
-    [string]$ServiceName = "MoviePilot-V2"
+    [string]$ServiceName = "MoviePilot-V2",
+    [string]$Repo        = "naughtyGitCat/Windows-MoviePilot",
+    [string]$DownloadDir = ""
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference    = "SilentlyContinue"  # speeds up Invoke-WebRequest
 
-# Resolve the bundled installer. Inno Setup ships it under the install dir
-# at the name we set in build.iss [Files].
-$mpInstaller = Join-Path $InstallDir "MoviePilot-V2-Setup.exe"
+if (-not $DownloadDir) {
+    $DownloadDir = Join-Path $InstallDir "downloads"
+}
 
 Write-Host "=========================================="
 Write-Host "  mp-relay -> MoviePilot setup"
 Write-Host "=========================================="
-Write-Host "Bundled installer: $mpInstaller"
+Write-Host "Repo        : $Repo"
+Write-Host "Download to : $DownloadDir"
+Write-Host ""
 
-if (-not (Test-Path $mpInstaller)) {
-    Write-Error "Bundled MoviePilot installer not found at $mpInstaller. The mp-relay install may be incomplete."
-    exit 1
-}
-
-# Detect an existing MoviePilot install and offer to skip.
+# --- Step 1: detect existing install + offer to skip ---
 $existing = Get-Service $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host ""
     Write-Host "MoviePilot service '$ServiceName' is already registered (Status: $($existing.Status))."
     if (-not $Silent) {
-        $reply = Read-Host "Run the bundled installer anyway? It will upgrade in place. [y/N]"
+        $reply = Read-Host "Run the installer anyway (will upgrade in place) [y/N]"
         if ($reply -ne 'y' -and $reply -ne 'Y') {
-            Write-Host "Skipped. mp-relay's .env should already have MP_URL pointing at the existing install."
+            Write-Host "Skipped. Configure MP_URL/MP_USER/MP_PASS in mp-relay's /setup or .env to point at this install."
             exit 0
         }
     }
 }
 
-# Build Inno Setup CLI args. /SP- skips "This will install..." dialog;
-# /SILENT shows only progress; /VERYSILENT suppresses everything.
-# /SUPPRESSMSGBOXES auto-clicks the wizard's stock confirmations.
+# --- Step 2: query GitHub for the latest release asset ---
+Write-Host "[1/3] Resolving latest Windows-MoviePilot release..."
+$apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
+try {
+    $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -Headers @{
+        "User-Agent" = "mp-relay-setup-moviepilot"
+        "Accept"     = "application/vnd.github+json"
+    }
+} catch {
+    Write-Error "Failed to query GitHub releases API: $($_.Exception.Message)"
+    Write-Error "Check internet connectivity and that the repo $Repo is public."
+    exit 2
+}
+
+$asset = $release.assets | Where-Object { $_.name -like "MoviePilot-V2-Setup-*.exe" } | Select-Object -First 1
+if (-not $asset) {
+    Write-Error "No MoviePilot-V2-Setup-*.exe asset in latest release of $Repo (tag $($release.tag_name))."
+    exit 3
+}
+$mb = [math]::Round($asset.size / 1MB, 1)
+Write-Host "      tag    : $($release.tag_name)"
+Write-Host "      asset  : $($asset.name) ($mb MB)"
+
+# --- Step 3: download (skip if already present + size matches) ---
+if (-not (Test-Path $DownloadDir)) {
+    New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
+}
+$installerPath = Join-Path $DownloadDir $asset.name
+
+$needDownload = $true
+if (Test-Path $installerPath) {
+    $existingSize = (Get-Item $installerPath).Length
+    if ($existingSize -eq $asset.size) {
+        Write-Host "[2/3] Cached installer matches expected size, skipping download."
+        $needDownload = $false
+    } else {
+        Write-Host "[2/3] Cached file size mismatch ($existingSize vs $($asset.size)), redownloading."
+    }
+}
+
+if ($needDownload) {
+    Write-Host "[2/3] Downloading $($asset.name) ($mb MB)..."
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installerPath -UseBasicParsing
+    $actualSize = (Get-Item $installerPath).Length
+    if ($actualSize -ne $asset.size) {
+        Write-Error "Download size mismatch: expected $($asset.size), got $actualSize. Delete $installerPath and retry."
+        exit 4
+    }
+    Write-Host "      OK ($actualSize bytes)"
+}
+
+# --- Step 4: run the installer ---
+Write-Host "[3/3] Launching MoviePilot installer (~1-2 min unpack)..."
 $args = @("/SP-")
 if ($Silent) {
     $args += @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
 }
-
-Write-Host ""
-Write-Host "Launching MoviePilot installer (about 124 MB unpack, takes 1-2 min)..."
-Write-Host "  args: $($args -join ' ')"
-
-# Start-Process so we can wait + capture exit code.
-$proc = Start-Process -FilePath $mpInstaller -ArgumentList $args -Wait -PassThru
+$proc = Start-Process -FilePath $installerPath -ArgumentList $args -Wait -PassThru
 $rc = $proc.ExitCode
 
 Write-Host ""
 if ($rc -eq 0) {
     Write-Host "MoviePilot installer finished cleanly."
-    # Best-effort verification: was a service installed + is it listening?
     Start-Sleep 2
     $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
     if ($svc) {
         Write-Host "Service '$ServiceName': $($svc.Status)"
     } else {
-        Write-Host "(Service '$ServiceName' not detected -- may not have been the wizard's service-mode pick.)"
+        Write-Host "(Service '$ServiceName' not detected -- the user may have unchecked service mode in MoviePilot's wizard.)"
     }
     Write-Host ""
-    Write-Host "Next: open http://localhost:3000 and create the admin account."
-    Write-Host "Then update mp-relay .env with MP_URL/MP_USER/MP_PASS via /setup or notepad."
+    Write-Host "Next:"
+    Write-Host "  1. Open http://localhost:3000 -> create admin account"
+    Write-Host "  2. In mp-relay /setup -> 'MoviePilot' card -> enter URL + creds + 'Test connection'"
     exit 0
 } else {
     Write-Warning "MoviePilot installer exited with code $rc"
-    Write-Warning "Possible causes: user cancelled the wizard, install path conflict, missing prerequisites."
+    Write-Warning "User may have cancelled the wizard; or check %TEMP%\Setup Log* for details."
     exit $rc
 }

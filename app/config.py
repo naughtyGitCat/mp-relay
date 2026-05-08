@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     qbt_user: str = "admin"
     qbt_pass: str = ""          # required at runtime
 
+    # --- Jellyfin (optional — used by the future "trigger library refresh
+    # after scrape" hook + surfaced in /setup so the user can health-check
+    # their Jellyfin URL+API key alongside MoviePilot/qBT/mdcx). Empty
+    # values disable any Jellyfin integration; mp-relay still functions
+    # without it (Jellyfin scans on its own schedule). ---
+    jellyfin_url: str = ""
+    jellyfin_api_key: str = ""
+
     # --- JAV path ---
     qbt_jav_category: str = "JAV"
     qbt_jav_savepath: str = r"G:\Downloads\JAV-staging"
