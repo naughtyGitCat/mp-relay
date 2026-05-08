@@ -77,6 +77,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; default — fast install path stays fast; user can opt in here, or run
 ; "Setup mdcx" Start-Menu shortcut later.
 Name: "setupmdcx";   Description: "Set up mdcx now (downloads ~300 MB, takes ~5 minutes)"; GroupDescription: "Optional: scrape pipeline"; Flags: unchecked
+; MoviePilot installer is BUNDLED (not lazy-downloaded) — added ~124 MB
+; to mp-relay's installer at CI build time. Unchecked by default for
+; the same reason: most existing homelab users already have a working
+; MoviePilot install they'll just point at via .env. Tick this for a
+; from-scratch host that needs the whole stack.
+Name: "setupmp";     Description: "Install bundled MoviePilot now (124 MB unpack, takes 1-2 minutes)"; GroupDescription: "Optional: companion services"; Flags: unchecked
 
 [Files]
 ; --- mp-relay Python source. Excludes development cruft + the user's local
@@ -104,9 +110,19 @@ Source: "Python\*"; DestDir: "{app}\Python"; Flags: ignoreversion recursesubdirs
 ; --- Launchers / service scripts
 Source: "launcher.bat";          DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
 Source: "nssm.exe";              DestDir: "{app}"; Flags: ignoreversion
-Source: "service-install.ps1";   DestDir: "{app}"; Flags: ignoreversion
-Source: "service-uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "setup-mdcx.ps1";        DestDir: "{app}"; Flags: ignoreversion
+Source: "service-install.ps1";    DestDir: "{app}"; Flags: ignoreversion
+Source: "service-uninstall.ps1";  DestDir: "{app}"; Flags: ignoreversion
+Source: "setup-mdcx.ps1";         DestDir: "{app}"; Flags: ignoreversion
+Source: "setup-moviepilot.ps1";   DestDir: "{app}"; Flags: ignoreversion
+
+; MoviePilot installer bundled at CI build time (download step in
+; .github/workflows/build-installer.yml fetches the latest release of
+; naughtyGitCat/Windows-MoviePilot and renames it to a stable name so
+; this Source: line doesn't have to know the version-suffixed filename).
+; ~124 MB. Removable on uninstall — user-installed MoviePilot keeps
+; running via its own uninstaller. uninsneveruninstall preserves it
+; across mp-relay reinstalls so we don't re-extract on every upgrade.
+Source: "MoviePilot-V2-Setup.exe"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall
 
 [Icons]
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
@@ -114,6 +130,9 @@ Name: "{group}\Edit config (.env)";     Filename: "notepad.exe"; Parameters: """
 Name: "{group}\Setup mdcx (run once)";  Filename: "powershell.exe"; \
     Parameters: "-ExecutionPolicy Bypass -NoProfile -NoExit -File ""{app}\setup-mdcx.ps1"" -InstallDir ""{app}"""; \
     Comment: "Bootstrap mdcx (uv + Python 3.13 + Chromium ~300 MB total). Run once after install."
+Name: "{group}\Install MoviePilot";     Filename: "powershell.exe"; \
+    Parameters: "-ExecutionPolicy Bypass -NoProfile -NoExit -File ""{app}\setup-moviepilot.ps1"" -InstallDir ""{app}"""; \
+    Comment: "Run the bundled MoviePilot installer. Skip if MoviePilot already installed on this host."
 Name: "{group}\Open install folder";    Filename: "{app}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
@@ -141,6 +160,17 @@ Filename: "powershell.exe"; \
     Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup-mdcx.ps1"" -InstallDir ""{app}"" -NoServiceRestart"; \
     StatusMsg: "Bootstrapping mdcx (downloading ~300 MB, please wait)..."; \
     Tasks: setupmdcx; \
+    Flags: waituntilterminated
+
+; If user opted into MoviePilot setup: run the bundled installer. Default
+; mode is interactive so the user can pick install dir / service mode
+; from MoviePilot's own wizard. -Silent flag is available for unattended
+; deploys but isn't the default — visible install matches user expectation
+; for the wizard checkbox.
+Filename: "powershell.exe"; \
+    Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup-moviepilot.ps1"" -InstallDir ""{app}"""; \
+    StatusMsg: "Launching MoviePilot installer..."; \
+    Tasks: setupmp; \
     Flags: waituntilterminated
 
 ; If NOT service mode: offer to launch interactively after install.

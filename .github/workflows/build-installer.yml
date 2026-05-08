@@ -98,6 +98,30 @@ jobs:
           }
           Write-Host "nssm.exe SHA OK"
 
+      - name: Bundle latest Windows-MoviePilot installer
+        # Fetch the latest release of naughtyGitCat/Windows-MoviePilot
+        # and rename to a stable filename (MoviePilot-V2-Setup.exe) so
+        # build.iss [Files] doesn't have to know the version suffix.
+        # Adds ~124 MB to the mp-relay installer; user opts into running
+        # it via the wizard's "Install bundled MoviePilot" task.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # gh CLI is preinstalled on windows-latest; auth via GH_TOKEN.
+          $json = gh release view --repo naughtyGitCat/Windows-MoviePilot --json assets,tagName | ConvertFrom-Json
+          $asset = $json.assets | Where-Object { $_.name -like "MoviePilot-V2-Setup-*.exe" } | Select-Object -First 1
+          if (-not $asset) {
+            Write-Error "No MoviePilot-V2-Setup-*.exe asset found in latest Windows-MoviePilot release"
+            exit 1
+          }
+          Write-Host "Bundling Windows-MoviePilot tag=$($json.tagName) -> $($asset.name) ($([math]::Round($asset.size/1MB,1)) MB)"
+          gh release download $json.tagName --repo naughtyGitCat/Windows-MoviePilot --pattern $asset.name --dir $env:RUNNER_TEMP
+          $src = Join-Path $env:RUNNER_TEMP $asset.name
+          $dst = "build\MoviePilot-V2-Setup.exe"
+          Copy-Item $src $dst -Force
+          Write-Host "Staged: $dst ($((Get-Item $dst).Length / 1MB) MB)"
+
       - name: Locate Inno Setup
         # windows-latest ships Inno Setup 6.x preinstalled (verified
         # 2026-05-08: 6.7.1 on windows-2025 image). We just need to find
