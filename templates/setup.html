@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mp-relay 初始化</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #0e1116;
+      --fg: #d8d8d8;
+      --muted: #707070;
+      --accent: #4a9eff;
+      --accent-hover: #6bb1ff;
+      --border: #2a2a2a;
+      --card: #161b22;
+      --error: #f85149;
+      --ok: #3fb950;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f8fa; --fg: #24292f; --muted: #57606a;
+        --border: #d0d7de; --card: #ffffff;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      margin: 0 auto; padding: env(safe-area-inset-top, 0) 16px env(safe-area-inset-bottom, 16px);
+      background: var(--bg); color: var(--fg); max-width: 900px;
+    }
+    header { padding: 24px 0 16px; }
+    header h1 { margin: 0; font-size: 22px; }
+    header .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .status {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 16px; margin-bottom: 16px;
+    }
+    .status.ok { border-left: 4px solid var(--ok); }
+    .status.err { border-left: 4px solid var(--error); }
+    .status .label { font-weight: 600; }
+    .status pre {
+      margin: 8px 0 0; font: 12px monospace; color: var(--muted);
+      white-space: pre-wrap; word-break: break-all;
+    }
+
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 720px) { .cards { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px;
+    }
+    .card h3 { margin: 0 0 4px; font-size: 16px; }
+    .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; min-height: 2.5em; }
+    button {
+      background: var(--accent); color: white; border: 0;
+      padding: 10px 18px; border-radius: 8px; font-weight: 600;
+      cursor: pointer; font-size: 13px; width: 100%;
+    }
+    button:hover:not(:disabled) { background: var(--accent-hover); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+    button.secondary:hover:not(:disabled) { background: var(--bg); }
+    input[type=text] {
+      width: 100%; padding: 10px; font: 13px monospace;
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 8px;
+    }
+
+    #install-log {
+      margin-top: 16px;
+      background: #000; color: #c9d1d9;
+      font: 12px/1.4 ui-monospace, "SF Mono", monospace;
+      padding: 12px; border-radius: 8px; max-height: 320px; overflow-y: auto;
+      display: none; white-space: pre-wrap; word-break: break-all;
+    }
+    #install-log.active { display: block; }
+    .toast {
+      padding: 10px 12px; border-radius: 8px; margin-top: 12px;
+      font-size: 13px; display: none;
+    }
+    .toast.ok  { background: rgba(63, 185, 80, 0.1); border: 1px solid var(--ok); color: var(--ok); display: block; }
+    .toast.err { background: rgba(248, 81, 73, 0.1); border: 1px solid var(--error); color: var(--error); display: block; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>mp-relay 初始化</h1>
+  <div class="sub">检测并配置 mdcx — JAV 元数据刮削器。要么自动下载（约 300 MB），要么指向已有安装路径。</div>
+</header>
+
+<div class="status" id="status">
+  <div class="label">mdcx 状态：检测中…</div>
+  <pre id="status-detail"></pre>
+</div>
+
+<div class="cards">
+
+  <div class="card">
+    <h3>A. 自动下载安装</h3>
+    <div class="desc">
+      调用 <code>setup-mdcx.ps1</code> —— 装 uv + 克隆 mdcx fork + 同步 Python 3.13 + 装无头 Chromium。
+      首次约 5 分钟、~300 MB 流量。可重入。
+    </div>
+    <button id="btn-install">开始下载安装</button>
+  </div>
+
+  <div class="card">
+    <h3>B. 指向已有 mdcx 安装</h3>
+    <div class="desc">
+      已经在别处装过 mdcx —— 填入根目录（含 <code>pyproject.toml</code> + <code>.venv/</code>），自动探测 CLI 入口并写入 <code>.env</code>。
+    </div>
+    <input type="text" id="mdcx-dir" placeholder="E:\mdcx-src" autocomplete="off">
+    <button id="btn-configure" class="secondary">配置并验证</button>
+  </div>
+
+</div>
+
+<div id="install-log"></div>
+<div id="toast" class="toast"></div>
+
+<p style="margin-top: 24px; color: var(--muted); font-size: 12px;">
+  配置完毕后 <a href="/">回主页</a> 或 <a href="/health" target="_blank">查看 /health</a> 验证。
+</p>
+
+<script>
+const statusEl = document.getElementById('status');
+const statusDetail = document.getElementById('status-detail');
+const btnInstall = document.getElementById('btn-install');
+const btnConfigure = document.getElementById('btn-configure');
+const mdcxDirInput = document.getElementById('mdcx-dir');
+const logEl = document.getElementById('install-log');
+const toast = document.getElementById('toast');
+
+function showToast(msg, kind = 'ok') {
+  toast.className = 'toast ' + kind;
+  toast.textContent = msg;
+  setTimeout(() => { toast.className = 'toast'; }, 5000);
+}
+
+function renderStatus(s) {
+  const m = s.mdcx;
+  statusEl.className = 'status ' + (m.ok ? 'ok' : 'err');
+  statusEl.querySelector('.label').textContent =
+    m.ok ? '✓ mdcx 已配置且可用' : `✗ mdcx 不可用 — ${m.error || '(未知错误)'}`;
+  statusDetail.textContent =
+    `MDCX_DIR    = ${m.config.mdcx_dir}\n` +
+    `MDCX_PYTHON = ${m.config.mdcx_python}\n` +
+    `MDCX_MODULE = ${m.config.mdcx_module}`;
+  // Pre-fill the configure input if user has a dir set already
+  if (!mdcxDirInput.value) mdcxDirInput.value = m.config.mdcx_dir || '';
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch('/api/setup/status');
+    const data = await r.json();
+    renderStatus(data);
+    return data;
+  } catch (e) {
+    statusEl.querySelector('.label').textContent = `检测失败：${e}`;
+    return null;
+  }
+}
+
+let installPollTimer = null;
+let installCursor = 0;
+
+async function pollInstallLog() {
+  let r, data;
+  try {
+    r = await fetch('/api/setup/install/log?since=' + installCursor);
+    data = await r.json();
+  } catch (e) {
+    logEl.textContent += '\n[wizard] 拉日志出错：' + e;
+    return;
+  }
+  if (data.dropped > 0) {
+    logEl.textContent += `\n[wizard] (${data.dropped} 条早期日志被截断)\n`;
+  }
+  for (const line of data.lines || []) {
+    logEl.textContent += line + '\n';
+  }
+  installCursor = data.next_since;
+  logEl.scrollTop = logEl.scrollHeight;
+
+  if (data.running) {
+    installPollTimer = setTimeout(pollInstallLog, 1500);
+  } else {
+    btnInstall.disabled = false;
+    btnInstall.textContent = '开始下载安装';
+    if (data.return_code === 0) {
+      showToast('mdcx 安装完成！正在重新检测状态…', 'ok');
+    } else {
+      showToast(`安装失败（rc=${data.return_code}）— 看上方日志定位问题。`, 'err');
+    }
+    refreshStatus();
+  }
+}
+
+btnInstall.addEventListener('click', async () => {
+  btnInstall.disabled = true;
+  btnInstall.textContent = '安装中…';
+  logEl.className = 'active';
+  logEl.textContent = '';
+  installCursor = 0;
+
+  let r, data;
+  try {
+    r = await fetch('/api/setup/install', { method: 'POST' });
+    data = await r.json();
+  } catch (e) {
+    showToast(`触发失败：${e}`, 'err');
+    btnInstall.disabled = false;
+    btnInstall.textContent = '开始下载安装';
+    return;
+  }
+  if (!r.ok) {
+    showToast(`触发失败：${data.detail || data.error || r.status}`, 'err');
+    btnInstall.disabled = false;
+    btnInstall.textContent = '开始下载安装';
+    return;
+  }
+  pollInstallLog();
+});
+
+btnConfigure.addEventListener('click', async () => {
+  const dir = mdcxDirInput.value.trim();
+  if (!dir) { showToast('请填入 mdcx 根目录', 'err'); return; }
+  btnConfigure.disabled = true;
+  btnConfigure.textContent = '验证中…';
+
+  const fd = new FormData();
+  fd.set('mdcx_dir', dir);
+  let r, data;
+  try {
+    r = await fetch('/api/setup/configure', { method: 'POST', body: fd });
+    data = await r.json();
+  } catch (e) {
+    showToast(`验证失败：${e}`, 'err');
+    btnConfigure.disabled = false;
+    btnConfigure.textContent = '配置并验证';
+    return;
+  }
+
+  btnConfigure.disabled = false;
+  btnConfigure.textContent = '配置并验证';
+  if (!r.ok) {
+    showToast(`验证失败：${data.detail || r.status}`, 'err');
+    return;
+  }
+  showToast('配置已写入 .env，下一次 mdcx 调用会用新路径。', 'ok');
+  refreshStatus();
+});
+
+// On load — and every 30s for slow-changing status (covers in-band edits to .env)
+refreshStatus();
+setInterval(() => { if (!installPollTimer || !document.hidden) refreshStatus(); }, 30000);
+</script>
+</body>
+</html>

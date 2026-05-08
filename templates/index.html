@@ -122,6 +122,15 @@
     <div class="sub">磁力链 / 媒体名 → 自动分发 (普通媒体走 MoviePilot, JAV 走 mdcx) · <a href="/discover" style="color:var(--accent)">🎬 演员发现</a></div>
   </header>
 
+  <!-- Setup banner: shows only when /api/setup/status reports mdcx unhealthy.
+       Hidden by default; the JS at the bottom of this file flips it on. -->
+  <a id="setup-banner" href="/setup"
+     style="display:none; padding:10px 14px; margin-bottom:16px; border-radius:8px;
+            background:rgba(248,81,73,0.1); border:1px solid var(--error); color:var(--error);
+            font-size:13px; text-decoration:none; font-weight:600;">
+    ⚠ mdcx 未配置或不可用 — 点此前往 /setup 完成初始化
+  </a>
+
   <div class="input-card">
     <form id="submit-form">
       <textarea name="text" id="input" placeholder="贴磁力链 / .torrent URL / 媒体名《繁花》 / TMDB ID (tmdb:762504) / TMDB 或豆瓣详情页 URL" autofocus required></textarea>
@@ -615,6 +624,23 @@ document.addEventListener('visibilitychange', () => {
 });
 
 startPolling();
+
+// Setup banner: cheap probe on load (and once per minute) to surface
+// mdcx config issues right where the user submits work. Failure to
+// reach /api/setup/status is silently ignored — the banner just stays
+// hidden, and any actual scrape error will show up via /health on the
+// task table the same as before.
+const setupBanner = document.getElementById('setup-banner');
+async function checkSetupStatus() {
+  try {
+    const r = await fetch('/api/setup/status');
+    if (!r.ok) return;
+    const data = await r.json();
+    setupBanner.style.display = data.mdcx && data.mdcx.ok ? 'none' : 'block';
+  } catch { /* ignore — banner stays hidden */ }
+}
+checkSetupStatus();
+setInterval(checkSetupStatus, 60_000);
 </script>
 </body>
 </html>

@@ -17,7 +17,7 @@ from . import notify
 from . import store
 from .classifier import classify
 from .config import settings
-from . import cloud115, cloud115_watcher, cover_refill, discover, gfriends, img_proxy, jav_search, media_fallback, post_download
+from . import cloud115, cloud115_watcher, cover_refill, discover, gfriends, img_proxy, jav_search, media_fallback, post_download, setup_wizard
 from .exists import check_input as check_existence, extract_code as extract_jav_code
 from .mdcx_runner import healthcheck as mdcx_healthcheck
 from .mp_client import MpClient
@@ -127,6 +127,73 @@ async def health():
 async def metrics() -> Response:
     """Prometheus scrape endpoint. Served from the default global registry."""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+# ============================================================
+# First-run setup wizard — surfaces mdcx detection / install / config
+# in the web UI so the user doesn't need to SSH in to edit .env.
+# ============================================================
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request):
+    """Render the setup page. The page itself queries the JSON endpoints
+    below for live status — keeps the template simple."""
+    return templates.TemplateResponse(
+        request=request, name="setup.html", context={},
+    )
+
+
+@app.get("/api/setup/status")
+async def api_setup_status():
+    """Combined status for the setup page: current mdcx detection result
+    + state of any in-flight install."""
+    detect = await setup_wizard.detect()
+    return {
+        "mdcx": detect,
+        "install": setup_wizard.install_status(since=0),
+    }
+
+
+@app.post("/api/setup/configure")
+async def api_setup_configure(mdcx_dir: str = Form(...)):
+    """Path B: user has mdcx already installed; they tell us where.
+
+    We probe the dir for a working CLI module, write the resolved
+    {dir, python, module} into .env, AND mutate the running settings
+    in-place so the next mdcx call uses them — no service restart
+    required.
+    """
+    result = await setup_wizard.validate_path(mdcx_dir)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+
+    updates = {
+        "MDCX_DIR": mdcx_dir,
+        "MDCX_PYTHON": result["python"],
+        "MDCX_MODULE": result["module"],
+    }
+    setup_wizard.write_env_keys(updates)
+    setup_wizard.apply_settings_in_place(updates)
+
+    # Re-probe so the response confirms the new config actually works.
+    return {"ok": True, "applied": updates, "health": await setup_wizard.detect()}
+
+
+@app.post("/api/setup/install")
+async def api_setup_install():
+    """Path A: trigger setup-mdcx.ps1 in the background. Returns immediately;
+    poll /api/setup/install/log for progress."""
+    result = await setup_wizard.start_install()
+    if not result["ok"]:
+        raise HTTPException(409, result["error"])
+    return result
+
+
+@app.get("/api/setup/install/log")
+async def api_setup_install_log(since: int = 0):
+    """Tail the install log. ``since`` is the cursor returned by the
+    previous call's ``next_since``."""
+    return setup_wizard.install_status(since=since)
 
 
 # ============================================================
