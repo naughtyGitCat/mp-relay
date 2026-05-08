@@ -14,3 +14,9 @@ venv/
 build/Python/
 build/exe/
 *.iss.tmp
+
+# Packer integration-test local config + outputs
+tests/integration/packer/local.pkrvars.hcl
+tests/integration/packer/packer-output/
+tests/integration/packer/packer_cache/
+tests/integration/packer/.packer.d/
