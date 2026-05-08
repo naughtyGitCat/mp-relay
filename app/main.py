@@ -145,13 +145,120 @@ async def setup_page(request: Request):
 
 @app.get("/api/setup/status")
 async def api_setup_status():
-    """Combined status for the setup page: current mdcx detection result
-    + state of any in-flight install."""
-    detect = await setup_wizard.detect()
+    """Combined status for the setup page: current mdcx detection +
+    cached config snapshot for MoviePilot / qBT / Jellyfin (no live probe
+    here — that happens on "Test connection" click via the dedicated
+    endpoints below; keeps this endpoint cheap enough to poll on a
+    timer from /index)."""
+    mdcx = await setup_wizard.detect()
     return {
-        "mdcx": detect,
+        "mdcx": mdcx,
+        "moviepilot": {
+            "url": settings.mp_url,
+            "user": settings.mp_user,
+            "has_password": bool(settings.mp_pass),
+        },
+        "qbt": {
+            "url": settings.qbt_url,
+            "user": settings.qbt_user,
+            "has_password": bool(settings.qbt_pass),
+        },
+        "jellyfin": {
+            "url": settings.jellyfin_url,
+            "has_api_key": bool(settings.jellyfin_api_key),
+        },
         "install": setup_wizard.install_status(since=0),
     }
+
+
+# Empty form values mean "keep current" — UX promise from the placeholder
+# text "(unchanged if blank)". These helpers fall back to settings.
+def _or_current(value: str, current: str) -> str:
+    return value if value else current
+
+
+@app.post("/api/setup/moviepilot/test")
+async def api_setup_moviepilot_test(
+    url: str = Form(""), user: str = Form(""), password: str = Form(""),
+):
+    """Probe MoviePilot creds without saving. UI calls this on "Test
+    connection" so the user can validate before they commit. Any blank
+    field is filled in from the running ``settings`` so the user can
+    re-test with just the password column without retyping everything."""
+    return await setup_wizard.probe_moviepilot(
+        _or_current(url, settings.mp_url),
+        _or_current(user, settings.mp_user),
+        _or_current(password, settings.mp_pass),
+    )
+
+
+@app.post("/api/setup/moviepilot/save")
+async def api_setup_moviepilot_save(
+    url: str = Form(""), user: str = Form(""), password: str = Form(""),
+):
+    """Test-then-persist. We always test before save so we never write a
+    config known-broken. 422-on-fail prompts the UI to surface the error
+    inline rather than silently saving bad data."""
+    final_url  = _or_current(url, settings.mp_url)
+    final_user = _or_current(user, settings.mp_user)
+    final_pass = _or_current(password, settings.mp_pass)
+
+    probe = await setup_wizard.probe_moviepilot(final_url, final_user, final_pass)
+    if not probe["ok"]:
+        raise HTTPException(422, probe["error"])
+    updates = {"MP_URL": final_url, "MP_USER": final_user, "MP_PASS": final_pass}
+    setup_wizard.write_env_keys(updates)
+    setup_wizard.apply_settings_in_place(updates)
+    return {"ok": True, "applied": {"MP_URL": final_url, "MP_USER": final_user, "MP_PASS": "***"}}
+
+
+@app.post("/api/setup/qbt/test")
+async def api_setup_qbt_test(
+    url: str = Form(""), user: str = Form(""), password: str = Form(""),
+):
+    return await setup_wizard.probe_qbt(
+        _or_current(url, settings.qbt_url),
+        _or_current(user, settings.qbt_user),
+        _or_current(password, settings.qbt_pass),
+    )
+
+
+@app.post("/api/setup/qbt/save")
+async def api_setup_qbt_save(
+    url: str = Form(""), user: str = Form(""), password: str = Form(""),
+):
+    final_url  = _or_current(url, settings.qbt_url)
+    final_user = _or_current(user, settings.qbt_user)
+    final_pass = _or_current(password, settings.qbt_pass)
+
+    probe = await setup_wizard.probe_qbt(final_url, final_user, final_pass)
+    if not probe["ok"]:
+        raise HTTPException(422, probe["error"])
+    updates = {"QBT_URL": final_url, "QBT_USER": final_user, "QBT_PASS": final_pass}
+    setup_wizard.write_env_keys(updates)
+    setup_wizard.apply_settings_in_place(updates)
+    return {"ok": True, "applied": {"QBT_URL": final_url, "QBT_USER": final_user, "QBT_PASS": "***"}}
+
+
+@app.post("/api/setup/jellyfin/test")
+async def api_setup_jellyfin_test(url: str = Form(""), api_key: str = Form("")):
+    return await setup_wizard.probe_jellyfin(
+        _or_current(url, settings.jellyfin_url),
+        _or_current(api_key, settings.jellyfin_api_key),
+    )
+
+
+@app.post("/api/setup/jellyfin/save")
+async def api_setup_jellyfin_save(url: str = Form(""), api_key: str = Form("")):
+    final_url = _or_current(url, settings.jellyfin_url)
+    final_key = _or_current(api_key, settings.jellyfin_api_key)
+    probe = await setup_wizard.probe_jellyfin(final_url, final_key)
+    if not probe["ok"]:
+        raise HTTPException(422, probe["error"])
+    updates = {"JELLYFIN_URL": final_url, "JELLYFIN_API_KEY": final_key}
+    setup_wizard.write_env_keys(updates)
+    setup_wizard.apply_settings_in_place(updates)
+    return {"ok": True, "applied": {"JELLYFIN_URL": final_url, "JELLYFIN_API_KEY": "***"}}
 
 
 @app.post("/api/setup/configure")
@@ -180,10 +287,14 @@ async def api_setup_configure(mdcx_dir: str = Form(...)):
 
 
 @app.post("/api/setup/install")
-async def api_setup_install():
-    """Path A: trigger setup-mdcx.ps1 in the background. Returns immediately;
-    poll /api/setup/install/log for progress."""
-    result = await setup_wizard.start_install()
+async def api_setup_install(script: str = Form("setup-mdcx")):
+    """Path A: trigger one of the bundled setup PS1 scripts (currently
+    ``setup-mdcx`` or ``setup-moviepilot``) in the background. Returns
+    immediately; poll /api/setup/install/log for progress.
+
+    Only one install runs at a time — the script-name parameter just
+    picks which one to launch when the slot is free."""
+    result = await setup_wizard.start_install(script=script)
     if not result["ok"]:
         raise HTTPException(409, result["error"])
     return result

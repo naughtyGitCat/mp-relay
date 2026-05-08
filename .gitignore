@@ -10,8 +10,7 @@ venv/
 .idea/
 .vscode/
 
-# Inno Setup build artifacts (CI-fetched / CI-staged, never committed)
+# Inno Setup build artifacts (CI-staged at build time, never committed)
 build/Python/
 build/exe/
-build/MoviePilot-V2-Setup.exe
 *.iss.tmp

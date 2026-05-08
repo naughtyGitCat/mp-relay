@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>mp-relay 初始化</title>
+  <title>mp-relay 配置</title>
   <style>
     :root {
       color-scheme: dark light;
@@ -27,7 +27,7 @@
     body {
       font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
       margin: 0 auto; padding: env(safe-area-inset-top, 0) 16px env(safe-area-inset-bottom, 16px);
-      background: var(--bg); color: var(--fg); max-width: 900px;
+      background: var(--bg); color: var(--fg); max-width: 960px;
     }
     header { padding: 24px 0 16px; }
     header h1 { margin: 0; font-size: 22px; }
@@ -35,140 +35,242 @@
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
 
-    .status {
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: 12px; padding: 16px; margin-bottom: 16px;
-    }
-    .status.ok { border-left: 4px solid var(--ok); }
-    .status.err { border-left: 4px solid var(--error); }
-    .status .label { font-weight: 600; }
-    .status pre {
-      margin: 8px 0 0; font: 12px monospace; color: var(--muted);
-      white-space: pre-wrap; word-break: break-all;
-    }
-
-    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    @media (max-width: 720px) { .cards { grid-template-columns: 1fr; } }
     .card {
       background: var(--card); border: 1px solid var(--border);
-      border-radius: 12px; padding: 18px;
+      border-radius: 12px; padding: 18px; margin-bottom: 16px;
+      transition: border-color 0.15s;
     }
-    .card h3 { margin: 0 0 4px; font-size: 16px; }
-    .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; min-height: 2.5em; }
+    .card.ok  { border-left: 4px solid var(--ok); }
+    .card.err { border-left: 4px solid var(--error); }
+    .card h3 { margin: 0 0 6px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+    .card h3 .badge {
+      font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 500;
+      background: var(--bg); color: var(--muted);
+    }
+    .card h3 .badge.ok  { background: rgba(63,185,80,0.15);  color: var(--ok); }
+    .card h3 .badge.err { background: rgba(248,81,73,0.15);  color: var(--error); }
+    .card .desc { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+    .card .detail { font: 12px monospace; color: var(--muted); margin: 6px 0 12px; white-space: pre-wrap; word-break: break-all; }
+
+    .field { display: grid; grid-template-columns: 100px 1fr; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .field label { color: var(--muted); font-size: 12px; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 8px 10px; font: 13px monospace;
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     button {
       background: var(--accent); color: white; border: 0;
-      padding: 10px 18px; border-radius: 8px; font-weight: 600;
-      cursor: pointer; font-size: 13px; width: 100%;
+      padding: 8px 16px; border-radius: 6px; font-weight: 600;
+      cursor: pointer; font-size: 13px;
     }
     button:hover:not(:disabled) { background: var(--accent-hover); }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button:disabled { opacity: 0.5; cursor: wait; }
     button.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
     button.secondary:hover:not(:disabled) { background: var(--bg); }
-    input[type=text] {
-      width: 100%; padding: 10px; font: 13px monospace;
-      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
-      border-radius: 8px; margin-bottom: 8px;
+    button.danger { background: rgba(248,81,73,0.85); }
+    .feedback {
+      font-size: 12px; margin-top: 8px; padding: 8px 10px; border-radius: 6px;
+      display: none; word-break: break-all;
     }
+    .feedback.ok  { background: rgba(63,185,80,0.1);  border: 1px solid var(--ok);    color: var(--ok); display: block; }
+    .feedback.err { background: rgba(248,81,73,0.1);  border: 1px solid var(--error); color: var(--error); display: block; }
 
+    #install-panel {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 18px; margin-bottom: 16px; display: none;
+    }
+    #install-panel.active { display: block; }
     #install-log {
-      margin-top: 16px;
       background: #000; color: #c9d1d9;
       font: 12px/1.4 ui-monospace, "SF Mono", monospace;
       padding: 12px; border-radius: 8px; max-height: 320px; overflow-y: auto;
-      display: none; white-space: pre-wrap; word-break: break-all;
+      white-space: pre-wrap; word-break: break-all;
     }
-    #install-log.active { display: block; }
-    .toast {
-      padding: 10px 12px; border-radius: 8px; margin-top: 12px;
-      font-size: 13px; display: none;
-    }
-    .toast.ok  { background: rgba(63, 185, 80, 0.1); border: 1px solid var(--ok); color: var(--ok); display: block; }
-    .toast.err { background: rgba(248, 81, 73, 0.1); border: 1px solid var(--error); color: var(--error); display: block; }
   </style>
 </head>
 <body>
 
 <header>
-  <h1>mp-relay 初始化</h1>
-  <div class="sub">检测并配置 mdcx — JAV 元数据刮削器。要么自动下载（约 300 MB），要么指向已有安装路径。</div>
+  <h1>mp-relay 配置</h1>
+  <div class="sub">配置依赖服务的位置和凭证 — 改完点 "Test" 验证再 "Save"，自动写入 <code>.env</code> 并热加载，无需重启服务。 · <a href="/">回主页</a></div>
 </header>
 
-<div class="status" id="status">
-  <div class="label">mdcx 状态：检测中…</div>
-  <pre id="status-detail"></pre>
-</div>
+<!-- ============================================================
+     mdcx — local fork; either auto-install or point to existing
+     ============================================================ -->
+<div class="card" id="card-mdcx">
+  <h3>mdcx <span class="badge" id="mdcx-badge">检测中…</span></h3>
+  <p class="desc">JAV 元数据刮削器。两种用法：A 自动下载 (~5 min, ~300 MB) 或 B 指向已有安装。</p>
+  <div class="detail" id="mdcx-detail"></div>
 
-<div class="cards">
-
-  <div class="card">
-    <h3>A. 自动下载安装</h3>
-    <div class="desc">
-      调用 <code>setup-mdcx.ps1</code> —— 装 uv + 克隆 mdcx fork + 同步 Python 3.13 + 装无头 Chromium。
-      首次约 5 分钟、~300 MB 流量。可重入。
-    </div>
-    <button id="btn-install">开始下载安装</button>
-  </div>
-
-  <div class="card">
-    <h3>B. 指向已有 mdcx 安装</h3>
-    <div class="desc">
-      已经在别处装过 mdcx —— 填入根目录（含 <code>pyproject.toml</code> + <code>.venv/</code>），自动探测 CLI 入口并写入 <code>.env</code>。
-    </div>
+  <div class="field">
+    <label for="mdcx-dir">MDCX_DIR</label>
     <input type="text" id="mdcx-dir" placeholder="E:\mdcx-src" autocomplete="off">
-    <button id="btn-configure" class="secondary">配置并验证</button>
   </div>
-
+  <div class="actions">
+    <button id="mdcx-install">下载并安装</button>
+    <button id="mdcx-save" class="secondary">保存 (B: 指向此路径)</button>
+  </div>
+  <div class="feedback" id="mdcx-feedback"></div>
 </div>
 
-<div id="install-log"></div>
-<div id="toast" class="toast"></div>
+<!-- Install log panel — appears when an install is running OR finished. -->
+<div id="install-panel">
+  <h3 id="install-title">安装日志</h3>
+  <div id="install-log"></div>
+</div>
+
+<!-- ============================================================
+     MoviePilot — URL + creds, with a separate "auto install" path
+     ============================================================ -->
+<div class="card" id="card-mp">
+  <h3>MoviePilot <span class="badge" id="mp-badge">未测试</span></h3>
+  <p class="desc">普通媒体的下载 / 整理 / 入库。如果还没装，点 "下载并安装" 走 setup-moviepilot.ps1。</p>
+
+  <div class="field">
+    <label for="mp-url">MP_URL</label>
+    <input type="text" id="mp-url" placeholder="http://localhost:3000" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="mp-user">MP_USER</label>
+    <input type="text" id="mp-user" placeholder="admin" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="mp-pass">MP_PASS</label>
+    <input type="password" id="mp-pass" placeholder="(unchanged if blank)" autocomplete="new-password">
+  </div>
+  <div class="actions">
+    <button id="mp-install" class="secondary">下载并安装</button>
+    <button id="mp-test" class="secondary">Test connection</button>
+    <button id="mp-save">Save</button>
+  </div>
+  <div class="feedback" id="mp-feedback"></div>
+</div>
+
+<!-- ============================================================
+     qBittorrent — URL + creds
+     ============================================================ -->
+<div class="card" id="card-qbt">
+  <h3>qBittorrent <span class="badge" id="qbt-badge">未测试</span></h3>
+  <p class="desc">JAV 走 qBT (而非 MP) 下载，方便绕开 MP 的 TMDB 识别失败。WebUI 必须开启。</p>
+
+  <div class="field">
+    <label for="qbt-url">QBT_URL</label>
+    <input type="text" id="qbt-url" placeholder="http://localhost:8080" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="qbt-user">QBT_USER</label>
+    <input type="text" id="qbt-user" placeholder="admin" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="qbt-pass">QBT_PASS</label>
+    <input type="password" id="qbt-pass" placeholder="(unchanged if blank)" autocomplete="new-password">
+  </div>
+  <div class="actions">
+    <button id="qbt-test" class="secondary">Test connection</button>
+    <button id="qbt-save">Save</button>
+  </div>
+  <div class="feedback" id="qbt-feedback"></div>
+</div>
+
+<!-- ============================================================
+     Jellyfin — optional, URL + API key
+     ============================================================ -->
+<div class="card" id="card-jf">
+  <h3>Jellyfin <span class="badge" id="jf-badge">可选</span></h3>
+  <p class="desc">可选。配上之后未来可以触发库刷新；现在只做健康检查。Dashboard → API Keys → 生成。</p>
+
+  <div class="field">
+    <label for="jf-url">JELLYFIN_URL</label>
+    <input type="text" id="jf-url" placeholder="http://localhost:8096" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="jf-key">API_KEY</label>
+    <input type="password" id="jf-key" placeholder="(unchanged if blank)" autocomplete="new-password">
+  </div>
+  <div class="actions">
+    <button id="jf-test" class="secondary">Test connection</button>
+    <button id="jf-save">Save</button>
+  </div>
+  <div class="feedback" id="jf-feedback"></div>
+</div>
 
 <p style="margin-top: 24px; color: var(--muted); font-size: 12px;">
-  配置完毕后 <a href="/">回主页</a> 或 <a href="/health" target="_blank">查看 /health</a> 验证。
+  保存的字段会立即热加载到运行中的 mp-relay；无需 <code>Restart-Service</code>。
+  · <a href="/health" target="_blank">/health</a>
 </p>
 
 <script>
-const statusEl = document.getElementById('status');
-const statusDetail = document.getElementById('status-detail');
-const btnInstall = document.getElementById('btn-install');
-const btnConfigure = document.getElementById('btn-configure');
-const mdcxDirInput = document.getElementById('mdcx-dir');
-const logEl = document.getElementById('install-log');
-const toast = document.getElementById('toast');
-
-function showToast(msg, kind = 'ok') {
-  toast.className = 'toast ' + kind;
-  toast.textContent = msg;
-  setTimeout(() => { toast.className = 'toast'; }, 5000);
+// -------- helpers --------
+async function postForm(url, fields) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) fd.set(k, v);
+  const r = await fetch(url, { method: 'POST', body: fd });
+  let body;
+  try { body = await r.json(); } catch { body = { detail: await r.text() }; }
+  return { ok: r.ok, status: r.status, body };
+}
+function setBadge(id, kind, text) {
+  const el = document.getElementById(id);
+  el.className = 'badge ' + (kind || '');
+  el.textContent = text;
+}
+function setFeedback(id, kind, msg) {
+  const el = document.getElementById(id);
+  if (!msg) { el.className = 'feedback'; el.textContent = ''; return; }
+  el.className = 'feedback ' + kind;
+  el.textContent = msg;
+}
+function setCardState(id, kind) {
+  const el = document.getElementById(id);
+  el.className = 'card ' + (kind || '');
 }
 
-function renderStatus(s) {
-  const m = s.mdcx;
-  statusEl.className = 'status ' + (m.ok ? 'ok' : 'err');
-  statusEl.querySelector('.label').textContent =
-    m.ok ? '✓ mdcx 已配置且可用' : `✗ mdcx 不可用 — ${m.error || '(未知错误)'}`;
-  statusDetail.textContent =
-    `MDCX_DIR    = ${m.config.mdcx_dir}\n` +
-    `MDCX_PYTHON = ${m.config.mdcx_python}\n` +
-    `MDCX_MODULE = ${m.config.mdcx_module}`;
-  // Pre-fill the configure input if user has a dir set already
-  if (!mdcxDirInput.value) mdcxDirInput.value = m.config.mdcx_dir || '';
-}
+// -------- mdcx --------
+const mdcxDir = document.getElementById('mdcx-dir');
+const mdcxInstallBtn = document.getElementById('mdcx-install');
+const mdcxSaveBtn = document.getElementById('mdcx-save');
+const mdcxDetail = document.getElementById('mdcx-detail');
 
-async function refreshStatus() {
-  try {
-    const r = await fetch('/api/setup/status');
-    const data = await r.json();
-    renderStatus(data);
-    return data;
-  } catch (e) {
-    statusEl.querySelector('.label').textContent = `检测失败：${e}`;
-    return null;
-  }
-}
+mdcxSaveBtn.addEventListener('click', async () => {
+  const dir = mdcxDir.value.trim();
+  if (!dir) { setFeedback('mdcx-feedback', 'err', '请填入 mdcx 根目录'); return; }
+  mdcxSaveBtn.disabled = true;
+  const { ok, body } = await postForm('/api/setup/configure', { mdcx_dir: dir });
+  mdcxSaveBtn.disabled = false;
+  if (!ok) { setFeedback('mdcx-feedback', 'err', body.detail || '保存失败'); return; }
+  setFeedback('mdcx-feedback', 'ok', '已保存到 .env');
+  refreshStatus();
+});
 
-let installPollTimer = null;
+mdcxInstallBtn.addEventListener('click', () => triggerInstall('setup-mdcx', '安装 mdcx (~300 MB / 5 min)'));
+
+// -------- shared install panel (runs setup-mdcx.ps1 OR setup-moviepilot.ps1) --------
+const installPanel = document.getElementById('install-panel');
+const installLog = document.getElementById('install-log');
+const installTitle = document.getElementById('install-title');
 let installCursor = 0;
+let installPollTimer = null;
+let installButtons = [];   // re-enable on completion
+
+async function triggerInstall(script, title) {
+  installTitle.textContent = title;
+  installPanel.classList.add('active');
+  installLog.textContent = '';
+  installCursor = 0;
+  installButtons = [mdcxInstallBtn, mpInstallBtn];
+  installButtons.forEach(b => b.disabled = true);
+
+  const { ok, body } = await postForm('/api/setup/install', { script });
+  if (!ok) {
+    installLog.textContent = `[wizard] 触发失败: ${body.detail || JSON.stringify(body)}\n`;
+    installButtons.forEach(b => b.disabled = false);
+    return;
+  }
+  pollInstallLog();
+}
 
 async function pollInstallLog() {
   let r, data;
@@ -176,90 +278,140 @@ async function pollInstallLog() {
     r = await fetch('/api/setup/install/log?since=' + installCursor);
     data = await r.json();
   } catch (e) {
-    logEl.textContent += '\n[wizard] 拉日志出错：' + e;
+    installLog.textContent += `\n[wizard] 拉日志出错：${e}`;
     return;
   }
-  if (data.dropped > 0) {
-    logEl.textContent += `\n[wizard] (${data.dropped} 条早期日志被截断)\n`;
-  }
-  for (const line of data.lines || []) {
-    logEl.textContent += line + '\n';
-  }
+  if (data.dropped > 0) installLog.textContent += `\n[wizard] (${data.dropped} 条早期日志被截断)\n`;
+  for (const line of (data.lines || [])) installLog.textContent += line + '\n';
   installCursor = data.next_since;
-  logEl.scrollTop = logEl.scrollHeight;
+  installLog.scrollTop = installLog.scrollHeight;
 
   if (data.running) {
     installPollTimer = setTimeout(pollInstallLog, 1500);
   } else {
-    btnInstall.disabled = false;
-    btnInstall.textContent = '开始下载安装';
-    if (data.return_code === 0) {
-      showToast('mdcx 安装完成！正在重新检测状态…', 'ok');
-    } else {
-      showToast(`安装失败（rc=${data.return_code}）— 看上方日志定位问题。`, 'err');
-    }
+    installButtons.forEach(b => b.disabled = false);
+    installLog.textContent += `\n[wizard] 完成 (rc=${data.return_code})\n`;
     refreshStatus();
   }
 }
 
-btnInstall.addEventListener('click', async () => {
-  btnInstall.disabled = true;
-  btnInstall.textContent = '安装中…';
-  logEl.className = 'active';
-  logEl.textContent = '';
-  installCursor = 0;
+// -------- generic test+save card binding ----------
+function bindCard({ name, fieldIds, testUrl, saveUrl, badgeId, feedbackId }) {
+  const els = Object.fromEntries(Object.entries(fieldIds).map(([k, v]) => [k, document.getElementById(v)]));
+  const testBtn = document.getElementById(name + '-test');
+  const saveBtn = document.getElementById(name + '-save');
 
-  let r, data;
-  try {
-    r = await fetch('/api/setup/install', { method: 'POST' });
-    data = await r.json();
-  } catch (e) {
-    showToast(`触发失败：${e}`, 'err');
-    btnInstall.disabled = false;
-    btnInstall.textContent = '开始下载安装';
-    return;
+  function collect() {
+    const out = {};
+    for (const [key, el] of Object.entries(els)) out[key] = el.value.trim();
+    return out;
   }
-  if (!r.ok) {
-    showToast(`触发失败：${data.detail || data.error || r.status}`, 'err');
-    btnInstall.disabled = false;
-    btnInstall.textContent = '开始下载安装';
-    return;
-  }
-  pollInstallLog();
+
+  testBtn.addEventListener('click', async () => {
+    testBtn.disabled = true;
+    const { ok, body } = await postForm(testUrl, collect());
+    testBtn.disabled = false;
+    if (body.ok) {
+      setBadge(badgeId, 'ok', '✓ ' + (body.version ? `v${body.version}` : 'OK'));
+      setCardState('card-' + name, 'ok');
+      setFeedback(feedbackId, 'ok', body.server_name ? `Connected: ${body.server_name}` : '凭证有效。');
+    } else {
+      setBadge(badgeId, 'err', '✗ 测试失败');
+      setCardState('card-' + name, 'err');
+      setFeedback(feedbackId, 'err', body.error || '未知错误');
+    }
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    const { ok, body, status } = await postForm(saveUrl, collect());
+    saveBtn.disabled = false;
+    if (ok) {
+      setBadge(badgeId, 'ok', '✓ 已保存');
+      setCardState('card-' + name, 'ok');
+      setFeedback(feedbackId, 'ok', '已写入 .env 并热加载。');
+    } else if (status === 422) {
+      setBadge(badgeId, 'err', '✗ 测试失败');
+      setCardState('card-' + name, 'err');
+      setFeedback(feedbackId, 'err', `保存被拒：${body.detail || '未知错误'}`);
+    } else {
+      setFeedback(feedbackId, 'err', body.detail || '保存失败');
+    }
+  });
+}
+
+// MoviePilot
+const mpInstallBtn = document.getElementById('mp-install');
+mpInstallBtn.addEventListener('click', () => triggerInstall('setup-moviepilot', '下载并安装 MoviePilot (~125 MB / 1-2 min)'));
+bindCard({
+  name: 'mp',
+  fieldIds: { url: 'mp-url', user: 'mp-user', password: 'mp-pass' },
+  testUrl: '/api/setup/moviepilot/test',
+  saveUrl: '/api/setup/moviepilot/save',
+  badgeId: 'mp-badge',
+  feedbackId: 'mp-feedback',
 });
 
-btnConfigure.addEventListener('click', async () => {
-  const dir = mdcxDirInput.value.trim();
-  if (!dir) { showToast('请填入 mdcx 根目录', 'err'); return; }
-  btnConfigure.disabled = true;
-  btnConfigure.textContent = '验证中…';
-
-  const fd = new FormData();
-  fd.set('mdcx_dir', dir);
-  let r, data;
-  try {
-    r = await fetch('/api/setup/configure', { method: 'POST', body: fd });
-    data = await r.json();
-  } catch (e) {
-    showToast(`验证失败：${e}`, 'err');
-    btnConfigure.disabled = false;
-    btnConfigure.textContent = '配置并验证';
-    return;
-  }
-
-  btnConfigure.disabled = false;
-  btnConfigure.textContent = '配置并验证';
-  if (!r.ok) {
-    showToast(`验证失败：${data.detail || r.status}`, 'err');
-    return;
-  }
-  showToast('配置已写入 .env，下一次 mdcx 调用会用新路径。', 'ok');
-  refreshStatus();
+// qBittorrent
+bindCard({
+  name: 'qbt',
+  fieldIds: { url: 'qbt-url', user: 'qbt-user', password: 'qbt-pass' },
+  testUrl: '/api/setup/qbt/test',
+  saveUrl: '/api/setup/qbt/save',
+  badgeId: 'qbt-badge',
+  feedbackId: 'qbt-feedback',
 });
 
-// On load — and every 30s for slow-changing status (covers in-band edits to .env)
+// Jellyfin
+bindCard({
+  name: 'jf',
+  fieldIds: { url: 'jf-url', api_key: 'jf-key' },
+  testUrl: '/api/setup/jellyfin/test',
+  saveUrl: '/api/setup/jellyfin/save',
+  badgeId: 'jf-badge',
+  feedbackId: 'jf-feedback',
+});
+
+// -------- /api/setup/status — populate field defaults + initial badges --------
+async function refreshStatus() {
+  let r, data;
+  try {
+    r = await fetch('/api/setup/status');
+    data = await r.json();
+  } catch (e) {
+    document.getElementById('mdcx-detail').textContent = '检测失败：' + e;
+    return;
+  }
+
+  // mdcx
+  setBadge('mdcx-badge', data.mdcx.ok ? 'ok' : 'err', data.mdcx.ok ? '✓ 已配置' : '✗ 未配置');
+  setCardState('card-mdcx', data.mdcx.ok ? 'ok' : 'err');
+  mdcxDetail.textContent =
+    `MDCX_DIR    = ${data.mdcx.config.mdcx_dir}\n` +
+    `MDCX_PYTHON = ${data.mdcx.config.mdcx_python}\n` +
+    `MDCX_MODULE = ${data.mdcx.config.mdcx_module}` +
+    (data.mdcx.error ? `\n\nerror: ${data.mdcx.error}` : '');
+  if (!mdcxDir.value) mdcxDir.value = data.mdcx.config.mdcx_dir || '';
+
+  // MoviePilot — show what's currently in .env (don't auto-trust; user clicks Test)
+  document.getElementById('mp-url').value  = data.moviepilot.url || '';
+  document.getElementById('mp-user').value = data.moviepilot.user || '';
+  if (data.moviepilot.has_password) {
+    document.getElementById('mp-pass').placeholder = '(密码已设置；留空表示沿用)';
+  }
+
+  document.getElementById('qbt-url').value  = data.qbt.url || '';
+  document.getElementById('qbt-user').value = data.qbt.user || '';
+  if (data.qbt.has_password) {
+    document.getElementById('qbt-pass').placeholder = '(密码已设置；留空表示沿用)';
+  }
+
+  document.getElementById('jf-url').value = data.jellyfin.url || '';
+  if (data.jellyfin.has_api_key) {
+    document.getElementById('jf-key').placeholder = '(API key 已设置；留空表示沿用)';
+  }
+}
 refreshStatus();
-setInterval(() => { if (!installPollTimer || !document.hidden) refreshStatus(); }, 30000);
 </script>
 </body>
 </html>

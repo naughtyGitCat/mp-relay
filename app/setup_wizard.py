@@ -34,10 +34,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 from .config import settings
 from . import mdcx_runner
 
 log = logging.getLogger(__name__)
+
+
+# Short timeout for connectivity probes — these run synchronously when the
+# user clicks "Test connection", so they need to fail fast on a stale URL.
+_PROBE_TIMEOUT_SEC: float = 6.0
 
 
 # CLI modules to probe in order. Auto-pick the first one that responds
@@ -206,44 +213,159 @@ def write_env_keys(updates: dict[str, str]) -> Path:
 
 
 def apply_settings_in_place(updates: dict[str, str]) -> None:
-    """Mutate the running ``settings`` so the next mdcx call sees new
+    """Mutate the running ``settings`` so the next service call sees new
     values without an mp-relay restart. Safe because pydantic-settings'
     BaseSettings exposes attribute access.
+
+    Maps the .env-style UPPER_SNAKE keys to settings' lower_snake attrs.
+    Adding a new config? Extend ``_FIELD_MAP``.
     """
-    field_map = {
-        "MDCX_DIR": "mdcx_dir",
-        "MDCX_PYTHON": "mdcx_python",
-        "MDCX_MODULE": "mdcx_module",
-    }
     for key, value in updates.items():
-        attr = field_map.get(key)
+        attr = _FIELD_MAP.get(key)
         if attr and hasattr(settings, attr):
             setattr(settings, attr, value)
+
+
+# .env key -> settings attribute name. Extend as new services are wired
+# into the setup page.
+_FIELD_MAP: dict[str, str] = {
+    "MDCX_DIR": "mdcx_dir",
+    "MDCX_PYTHON": "mdcx_python",
+    "MDCX_MODULE": "mdcx_module",
+    "MP_URL": "mp_url",
+    "MP_USER": "mp_user",
+    "MP_PASS": "mp_pass",
+    "QBT_URL": "qbt_url",
+    "QBT_USER": "qbt_user",
+    "QBT_PASS": "qbt_pass",
+    "JELLYFIN_URL": "jellyfin_url",
+    "JELLYFIN_API_KEY": "jellyfin_api_key",
+}
+
+
+# ---------------------------------------------------------------------------
+# Connectivity probes — run on "Test connection" click. Each returns the
+# usual {ok, error, ...detail} shape so the UI can surface success/failure
+# inline instead of waiting for the next /health call.
+# ---------------------------------------------------------------------------
+
+async def probe_moviepilot(url: str, user: str, password: str) -> dict:
+    """POST /api/v1/login/access-token against the supplied URL. Returns
+    ``{ok, error, version}``. We use the login endpoint (not /api/v1/system/
+    status) because (a) that's what a real client does, (b) it actually
+    validates the credentials rather than just confirming the URL is up.
+    """
+    if not url:
+        return {"ok": False, "error": "URL is required"}
+    base = url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_SEC) as c:
+            r = await c.post(
+                f"{base}/api/v1/login/access-token",
+                data={"username": user, "password": password},
+            )
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"HTTP error: {e}"}
+    if r.status_code == 200:
+        try:
+            tok = r.json().get("access_token")
+            if tok:
+                return {"ok": True, "error": None}
+        except Exception:
+            pass
+        return {"ok": False, "error": "200 but no access_token in response"}
+    if r.status_code in (401, 403):
+        return {"ok": False, "error": "credentials rejected (401/403) — check MP_USER / MP_PASS"}
+    return {"ok": False, "error": f"unexpected HTTP {r.status_code}: {r.text[:200]}"}
+
+
+async def probe_qbt(url: str, user: str, password: str) -> dict:
+    """POST /api/v2/auth/login against qBT WebUI. qBT returns plain "Ok."
+    on success and a 200 with a non-Ok body on bad creds (legacy quirk),
+    so we check both status AND body."""
+    if not url:
+        return {"ok": False, "error": "URL is required"}
+    base = url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_SEC) as c:
+            r = await c.post(
+                f"{base}/api/v2/auth/login",
+                data={"username": user, "password": password},
+                headers={"Referer": base},  # qBT WebUI requires same-origin Referer
+            )
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"HTTP error: {e}"}
+    body = (r.text or "").strip()
+    if r.status_code == 200 and body == "Ok.":
+        return {"ok": True, "error": None}
+    if r.status_code == 200 and body == "Fails.":
+        return {"ok": False, "error": "credentials rejected (qBT returned 'Fails.') — check QBT_USER / QBT_PASS"}
+    if r.status_code == 403:
+        return {"ok": False, "error": "qBT 403 — too many bad attempts; restart qBT or wait and retry"}
+    return {"ok": False, "error": f"unexpected response HTTP {r.status_code}: {body[:200]}"}
+
+
+async def probe_jellyfin(url: str, api_key: str) -> dict:
+    """GET /System/Info with the API key. Returns Server / Version on success
+    so the UI can surface "Jellyfin 10.10.x" as confirmation."""
+    if not url:
+        return {"ok": False, "error": "URL is required"}
+    if not api_key:
+        return {"ok": False, "error": "API key is required (Dashboard -> API Keys)"}
+    base = url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_SEC) as c:
+            r = await c.get(
+                f"{base}/System/Info",
+                headers={"X-Emby-Token": api_key},
+            )
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"HTTP error: {e}"}
+    if r.status_code == 200:
+        try:
+            info = r.json()
+            return {
+                "ok": True, "error": None,
+                "server_name": info.get("ServerName"),
+                "version": info.get("Version"),
+            }
+        except Exception as e:
+            return {"ok": False, "error": f"200 but body wasn't JSON: {e}"}
+    if r.status_code == 401:
+        return {"ok": False, "error": "API key rejected (401) — regenerate via Dashboard -> API Keys"}
+    return {"ok": False, "error": f"unexpected HTTP {r.status_code}: {r.text[:200]}"}
 
 
 # ---------------------------------------------------------------------------
 # Background install
 # ---------------------------------------------------------------------------
 
-def _setup_script_path() -> Path:
-    """Return the path to ``setup-mdcx.ps1``.
+def _setup_script_path(name: str) -> Path:
+    """Return the path to ``<name>.ps1`` (e.g. ``setup-mdcx`` /
+    ``setup-moviepilot``).
 
-    On the .exe-installer install layout the script sits at
-    ``{install-dir}\\setup-mdcx.ps1``. On dev / scp installs we ship
-    it under ``build/`` for now — both checked here so the wizard
-    works in either case.
+    On the .exe-installer install layout the scripts sit at
+    ``{install-dir}\\<name>.ps1``. On dev / scp installs we ship
+    them under ``build/`` — both checked here so the wizard works
+    in either case.
     """
+    fname = f"{name}.ps1"
     candidates = [
-        Path(".") / "setup-mdcx.ps1",
-        Path(__file__).parent.parent / "setup-mdcx.ps1",
-        Path(__file__).parent.parent / "build" / "setup-mdcx.ps1",
+        Path(".") / fname,
+        Path(__file__).parent.parent / fname,
+        Path(__file__).parent.parent / "build" / fname,
     ]
     for p in candidates:
         if p.is_file():
             return p.resolve()
     raise FileNotFoundError(
-        f"setup-mdcx.ps1 not found in any of: {[str(p) for p in candidates]}"
+        f"{fname} not found in any of: {[str(p) for p in candidates]}"
     )
+
+
+# Whitelist of scripts the wizard is allowed to spawn — guards against any
+# accidental endpoint that takes a script name from user input.
+_ALLOWED_SCRIPTS: frozenset[str] = frozenset({"setup-mdcx", "setup-moviepilot"})
 
 
 async def _stream_to_buffer(stream: asyncio.StreamReader, state: InstallState) -> None:
@@ -259,21 +381,28 @@ async def _stream_to_buffer(stream: asyncio.StreamReader, state: InstallState) -
         state.total_lines += 1
 
 
-async def start_install() -> dict:
-    """Spawn ``setup-mdcx.ps1`` in the background and start streaming its
-    output into the in-memory log buffer. Returns immediately; the
-    caller polls ``GET /api/setup/install/log`` for progress.
+async def start_install(script: str = "setup-mdcx") -> dict:
+    """Spawn one of the bundled setup PS1 scripts in the background and
+    stream its output into the in-memory log buffer. Returns immediately;
+    the caller polls ``GET /api/setup/install/log`` for progress.
 
-    Refuses to start a second install while one is running (returns
-    ``{ok: False, error: "already running"}``).
+    ``script`` must be one of ``_ALLOWED_SCRIPTS`` — any other value is
+    rejected, so even though endpoints currently hard-wire the value,
+    we won't accidentally enable a path-traversal exploit later.
+
+    Only one install runs at a time. Concurrent calls get
+    ``{ok: False, error: "already running"}``.
     """
+    if script not in _ALLOWED_SCRIPTS:
+        return {"ok": False, "error": f"unknown setup script {script!r}; allowed: {sorted(_ALLOWED_SCRIPTS)}"}
+
     global _install
     async with _install_lock:
         if _install.running:
             return {"ok": False, "error": "another install is already running"}
 
         try:
-            script = _setup_script_path()
+            script_path = _setup_script_path(script)
         except FileNotFoundError as e:
             return {"ok": False, "error": str(e)}
 
@@ -282,17 +411,26 @@ async def start_install() -> dict:
 
         install_dir = str(Path(__file__).parent.parent.resolve())
 
+        # Per-script extra args. setup-mdcx supports -NoServiceRestart so
+        # it doesn't kill mp-relay mid-install; setup-moviepilot is a
+        # no-op script (we'd never want to skip its install) and -Silent
+        # is the only knob — left as default (interactive) so the user
+        # can pick MoviePilot's install dir from its own wizard.
+        extra: list[str] = []
+        if script == "setup-mdcx":
+            extra = ["-NoServiceRestart"]
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 "powershell.exe", "-ExecutionPolicy", "Bypass", "-NoProfile",
-                "-File", str(script),
+                "-File", str(script_path),
                 "-InstallDir", install_dir,
-                "-NoServiceRestart",   # don't kill ourselves mid-install
+                *extra,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
         except Exception as e:
-            log.exception("failed to spawn setup-mdcx.ps1")
+            log.exception("failed to spawn %s", script_path)
             return {"ok": False, "error": f"failed to spawn powershell: {e}"}
 
         _install = InstallState(
