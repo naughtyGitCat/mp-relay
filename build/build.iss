@@ -203,15 +203,26 @@ begin
   Sleep(1000);
 end;
 
-{ Pre-install sanity check: warn if mdcx / MoviePilot / qBittorrent aren't
-  visible. We can't bundle them and the user will hit a wall during runtime
-  config if they're missing — better to surface it now. Soft warn only;
-  user may have valid reasons (different paths, remote services).}
+{ Pre-install sanity check: warn if mdcx / MoviePilot aren't visible at
+  standard locations. We can't bundle them and the user will hit a wall
+  during runtime config if they're missing — better to surface it now.
+  Soft warn only; user may have valid reasons (remote services, custom
+  paths). Skipped entirely in silent / very-silent mode because:
+    a) /SUPPRESSMSGBOXES defaults Yes/No prompts to NO, which would
+       silently abort the install — confusing for unattended pipelines
+    b) silent install is by definition non-interactive, so a
+       "do you want to continue?" prompt is the wrong UX anyway. The
+       user's downstream automation handles its own pre-checks.}
 function InitializeSetup(): Boolean;
 var
   Missing: String;
 begin
   Result := True;
+
+  { Don't probe in silent mode — see comment above. }
+  if WizardSilent() then
+    exit;
+
   Missing := '';
 
   { Common mdcx fork install location — see config.py:MDCX_DIR default. }
