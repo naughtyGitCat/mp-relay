@@ -98,17 +98,27 @@ jobs:
           }
           Write-Host "nssm.exe SHA OK"
 
-      - name: Install Inno Setup 6
-        # The runner doesn't have it preinstalled; choco does.
+      - name: Locate Inno Setup
+        # windows-latest ships Inno Setup 6.x preinstalled (verified
+        # 2026-05-08: 6.7.1 on windows-2025 image). We just need to find
+        # ISCC.exe across the version-suffixed path. If the runner image
+        # ever stops shipping it, swap to:
+        #   choco install innosetup --no-progress -y
+        # (NB: --version pin breaks if the preinstalled version is newer.)
         shell: pwsh
         run: |
-          choco install innosetup --version=6.2.2 --no-progress -y
-          # iscc.exe lives in: C:\Program Files (x86)\Inno Setup 6\
-          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            Write-Error "Inno Setup not found at $iscc after install"
+          $candidates = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Error "Inno Setup not found in standard paths: $($candidates -join ', ')"
             exit 1
           }
+          Write-Host "Using ISCC at: $iscc"
+          # Show version for the build log
+          & $iscc /? 2>&1 | Select-Object -First 1
           echo "ISCC=$iscc" >> $env:GITHUB_ENV
 
       - name: Compile installer
