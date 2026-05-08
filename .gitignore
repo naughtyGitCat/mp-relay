@@ -9,3 +9,8 @@ __pycache__/
 venv/
 .idea/
 .vscode/
+
+# Inno Setup build artifacts (build/Python/ + build/exe/)
+build/Python/
+build/exe/
+*.iss.tmp
