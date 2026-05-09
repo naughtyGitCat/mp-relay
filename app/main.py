@@ -159,9 +159,18 @@ async def api_setup_status():
     Also reads mdcx's own ``failed_output_folder`` via ``mdcx config get``
     so the wizard can surface the ``mp-relay failed_output_dir`` /
     ``mdcx failed_output_folder`` interaction (mdcx's value, if set,
-    means mdcx moves first and mp-relay's holding is a no-op)."""
+    means mdcx moves first and mp-relay's holding is a no-op).
+
+    Surfaces the wider set of mdcx fields (``success_output_folder``,
+    ``website_single``, ``scrape_like``, plus a few read-only flags) so
+    the /setup mdcx card can show "mdcx 关键配置" without the user opening
+    the GUI for each."""
     mdcx = await setup_wizard.detect()
-    mdcx["mdcx_failed_output_folder"] = await setup_wizard.mdcx_config_get("failed_output_folder")
+    mdcx_surfaced = await setup_wizard.mdcx_get_surfaced_config()
+    mdcx["mdcx_failed_output_folder"] = mdcx_surfaced.get("failed_output_folder")
+    mdcx["mdcx_surfaced"] = mdcx_surfaced
+    mdcx["mdcx_editable_fields"]  = list(setup_wizard.MDCX_EDITABLE_FIELDS)
+    mdcx["mdcx_readonly_expects"] = setup_wizard.MDCX_READONLY_FIELDS
     return {
         "mdcx": mdcx,
         "failed_output_dir": settings.failed_output_dir,
@@ -316,6 +325,29 @@ async def api_setup_failed_output_dir(failed_output_dir: str = Form("")):
     setup_wizard.write_env_keys({"FAILED_OUTPUT_DIR": final})
     setup_wizard.apply_settings_in_place({"FAILED_OUTPUT_DIR": final})
     return {"ok": True, "applied": {"FAILED_OUTPUT_DIR": final or "(empty — sibling-collector default)"}}
+
+
+@app.post("/api/setup/mdcx-config-set")
+async def api_setup_mdcx_config_set(key: str = Form(...), value: str = Form("")):
+    """Mutate a single mdcx config field via mdcx's own CLI. Restricted
+    to the whitelist mp-relay surfaces (``MDCX_EDITABLE_FIELDS``) — any
+    other key is rejected before we even invoke mdcx. mdcx itself also
+    has its own ``_FIELDS`` whitelist as a second-level guard, so even
+    if our list drifted, mdcx would refuse unsafe writes.
+
+    Empty string is a valid value for path-type fields (means "unset")."""
+    if key not in setup_wizard.MDCX_EDITABLE_FIELDS:
+        raise HTTPException(
+            400,
+            f"key {key!r} not in surface allow-list. Allowed: {setup_wizard.MDCX_EDITABLE_FIELDS}",
+        )
+    result = await setup_wizard.mdcx_config_set(key, value)
+    if not result.get("ok"):
+        # mdcx printed the validation failure to stderr — surface it
+        raise HTTPException(422, f"mdcx rejected {key}={value!r}: {result.get('stderr', 'unknown')}")
+    # Return the new effective value as a confirmation
+    new_val = await setup_wizard.mdcx_config_get(key)
+    return {"ok": True, "key": key, "value": new_val}
 
 
 @app.post("/api/setup/mdcx-takeover-failed")

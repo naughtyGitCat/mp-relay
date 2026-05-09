@@ -138,6 +138,22 @@
     </div>
     <div class="feedback" id="mdcx-failed-feedback"></div>
   </div>
+
+  <!-- ============================================================
+       mdcx 关键配置 — read mdcx's own config.v2.json via the fork's
+       `mdcx config get/set` CLI. Values are written back via the same
+       CLI (whitelist-validated by mdcx itself).
+       ============================================================ -->
+  <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border)">
+    <h3 style="font-size:13px; color:var(--muted); margin:0 0 6px 0">mdcx 关键配置 (写入 mdcx config.v2.json)</h3>
+    <p class="desc">
+      mdcx 自己的配置项（不是 mp-relay 的）。下面这些字段直接写到 mdcx 的 config.v2.json，
+      mdcx GUI 看到的就是同一份。下面几行：路径 / 字符串 / 整数走可编辑（左侧带输入框），布尔 / 列表
+      只读显示（要改去 mdcx GUI），值跟 mp-relay 假设不符的会高亮提醒。
+    </p>
+    <div id="mdcx-fields-list"></div>
+    <div class="feedback" id="mdcx-fields-feedback"></div>
+  </div>
 </div>
 
 <!-- Install log panel — appears when an install is running OR finished. -->
@@ -460,6 +476,85 @@ bindCard({
   feedbackId: 'jf-feedback',
 });
 
+// -------- mdcx-config-set — render whitelist + per-field save --------
+function _readonlyOk(key, value, expected) {
+  // download_files uses a substring-glob pattern (e.g. "*poster*thumb*"); the
+  // others compare straight strings (lower-cased) against mdcx's JSON output.
+  if (value == null) return null;
+  if (expected.startsWith('*')) {
+    const tokens = expected.split('*').filter(t => t);
+    return tokens.every(t => value.toLowerCase().includes(t.toLowerCase()));
+  }
+  return value.trim().toLowerCase() === expected.toLowerCase();
+}
+
+function renderMdcxFieldsList(mdcx) {
+  const root = document.getElementById('mdcx-fields-list');
+  const surfaced = mdcx.mdcx_surfaced || {};
+  const editable = mdcx.mdcx_editable_fields || [];
+  const readonlyExpects = mdcx.mdcx_readonly_expects || {};
+  root.innerHTML = '';
+
+  // Editable rows — input + per-row Save
+  for (const key of editable) {
+    const cur = surfaced[key];
+    const display = cur == null ? '' : (cur.startsWith('"') && cur.endsWith('"') ? cur.slice(1,-1) : cur);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid; grid-template-columns:160px 1fr auto; gap:8px; align-items:center; margin:4px 0;';
+    row.innerHTML = `
+      <label style="color:var(--muted); font-size:12px; font-family:monospace">${key}</label>
+      <input type="text" data-key="${key}" value="${display.replace(/"/g, '&quot;')}" placeholder="(空)" style="font:12px monospace; padding:6px 8px; background:var(--bg); border:1px solid var(--border); border-radius:6px;">
+      <button class="secondary mdcx-row-save" data-key="${key}" style="padding:6px 12px; font-size:12px">Save</button>`;
+    root.appendChild(row);
+  }
+
+  // Read-only rows
+  if (Object.keys(readonlyExpects).length) {
+    const sep = document.createElement('div');
+    sep.style.cssText = 'margin:10px 0 4px 0; color:var(--muted); font-size:11px; text-transform:uppercase';
+    sep.textContent = '只读 (要改去 mdcx GUI)';
+    root.appendChild(sep);
+    for (const [key, expected] of Object.entries(readonlyExpects)) {
+      const cur = surfaced[key];
+      const ok = _readonlyOk(key, cur, expected);
+      const row = document.createElement('div');
+      const color = ok === true ? 'var(--ok)' : ok === false ? 'var(--error)' : 'var(--muted)';
+      const icon = ok === true ? '✓' : ok === false ? '⚠' : '?';
+      row.style.cssText = 'display:grid; grid-template-columns:160px 1fr; gap:8px; margin:4px 0; font-size:12px;';
+      row.innerHTML = `
+        <span style="color:var(--muted); font-family:monospace">${key}</span>
+        <span style="font-family:monospace; color:${color}">${icon} ${cur == null ? '(read failed)' : cur}${ok === false ? `  ← 期望 ${expected}` : ''}</span>`;
+      root.appendChild(row);
+    }
+  }
+
+  // Wire up Save buttons (re-bind every render — innerHTML wiped)
+  for (const btn of root.querySelectorAll('.mdcx-row-save')) {
+    btn.addEventListener('click', async () => {
+      const key = btn.dataset.key;
+      const input = root.querySelector(`input[data-key="${key}"]`);
+      btn.disabled = true;
+      const fd = new FormData();
+      fd.set('key', key);
+      fd.set('value', input.value);
+      let r, body;
+      try {
+        r = await fetch('/api/setup/mdcx-config-set', { method: 'POST', body: fd });
+        body = await r.json();
+      } catch (e) {
+        setFeedback('mdcx-fields-feedback', 'err', `请求失败：${e}`);
+        btn.disabled = false; return;
+      }
+      btn.disabled = false;
+      if (r.ok) {
+        setFeedback('mdcx-fields-feedback', 'ok', `${key} = ${body.value}`);
+      } else {
+        setFeedback('mdcx-fields-feedback', 'err', `${key} 保存被拒：${body.detail || '未知错误'}`);
+      }
+    });
+  }
+}
+
 // -------- /api/setup/status — populate field defaults + initial badges --------
 async function refreshStatus() {
   let r, data;
@@ -501,6 +596,14 @@ async function refreshStatus() {
     takeoverBtn.style.display = 'none';
   }
   mdcxFailedDetail.textContent = detailLines.join('\n');
+
+  // mdcx 关键配置 — render dynamic field list. Each editable field gets
+  // its own input + Save; readonly fields show a status pill with a
+  // warning if value differs from the expected pattern. We re-render the
+  // entire list on each refresh — if user has 2 saves in flight that
+  // would normally create UI flicker, current implementation keeps it
+  // simple (Save returns the new value + we surface it via feedback).
+  renderMdcxFieldsList(data.mdcx);
 
   // MoviePilot — show what's currently in .env (don't auto-trust; user clicks Test)
   document.getElementById('mp-url').value  = data.moviepilot.url || '';
