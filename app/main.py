@@ -146,10 +146,15 @@ async def setup_page(request: Request):
 @app.get("/api/setup/status")
 async def api_setup_status():
     """Combined status for the setup page: current mdcx detection +
-    cached config snapshot for MoviePilot / qBT / Jellyfin (no live probe
-    here — that happens on "Test connection" click via the dedicated
-    endpoints below; keeps this endpoint cheap enough to poll on a
-    timer from /index)."""
+    cached config snapshot for MoviePilot / qBT / Jellyfin / 115 (no
+    live probe here — that happens on "Test connection" click via the
+    dedicated endpoints below; keeps this endpoint cheap enough to
+    poll on a timer from /index).
+
+    115 special case: surfaces both the auth status (whether tokens
+    are persisted) and the configured save_dir_id. Users without a
+    115 membership see ``authorized=false`` and the wizard renders an
+    "Authorize" CTA instead of credential fields. Truly opt-in."""
     mdcx = await setup_wizard.detect()
     return {
         "mdcx": mdcx,
@@ -166,6 +171,11 @@ async def api_setup_status():
         "jellyfin": {
             "url": settings.jellyfin_url,
             "has_api_key": bool(settings.jellyfin_api_key),
+        },
+        "cloud115": {
+            "authorized": cloud115.is_authorized(),
+            "save_dir_id": settings.cloud115_save_dir_id,
+            "auth_url": "/auth/115",
         },
         "install": setup_wizard.install_status(since=0),
     }

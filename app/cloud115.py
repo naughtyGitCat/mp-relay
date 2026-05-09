@@ -328,9 +328,19 @@ async def quota_info() -> dict:
 
 
 async def healthcheck() -> Optional[str]:
-    """Return None if cloud115 is reachable + token alive, else error string."""
+    """Return None if cloud115 is reachable + token alive, else status string.
+
+    Three states distinguished by the caller:
+      - ``None``                — authorized + reachable
+      - ``"disabled (...)"``    — never authorized; this is normal for users
+                                  without a 115 membership and shouldn't be
+                                  treated as an error
+      - any other string        — authorized but something went wrong (token
+                                  expired, network, quota probe rejected, ...)
+                                  — caller should surface as a real error
+    """
     if not is_authorized():
-        return "unauthorized — open /auth/115 to scan QR"
+        return "disabled (no 115 token; visit /auth/115 to enable, or ignore if you don't use 115)"
     try:
         resp = await quota_info()
         if isinstance(resp, dict) and resp.get("state") is False:
