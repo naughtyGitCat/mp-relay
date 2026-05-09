@@ -12,7 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        # p115client (hard dep) requires Python >=3.12, so 3.11 cannot install
+        # requirements.txt. We bundle Python 3.12 in the Windows installer, so
+        # 3.11 is not a supported runtime anyway.
+        python-version: ["3.12"]
 
     steps:
       - uses: actions/checkout@v4
