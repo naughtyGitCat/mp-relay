@@ -1,13 +1,14 @@
 name: Build Windows installer
 
-# Triggered on tag push (v*) — produces a single
-# mp-relay-Setup-<version>.exe and attaches it to the GitHub Release for the tag.
-#
-# Manual run via workflow_dispatch is also supported for testing — won't
-# create a release, just uploads the .exe as an artifact.
+# Build & release matrix:
+#   - Tag push (v*)        → "stable" Release, version = tag w/o v prefix
+#   - Push to main         → "continuous" Release (prerelease), version =
+#                             <YYYY.MM.DD>.<github.run_number>, tag = build-<n>
+#   - workflow_dispatch    → no Release, just a 30-day Artifact (testing)
 
 on:
   push:
+    branches: [main]
     tags:
       - "v*"
   workflow_dispatch:
@@ -16,6 +17,10 @@ on:
         description: "Version string for the installer (e.g. 2.0.0.test)"
         default: "0.0.0.dev"
         required: false
+
+# softprops/action-gh-release needs contents:write to create the tag + Release.
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -29,15 +34,26 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          # On tag push: strip the 'v' prefix → 2.0.0
-          # On manual run: use the workflow_dispatch input
-          if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
+          # Three modes:
+          #   tag push v*     → strip 'v', produces e.g. 2.0.0
+          #   push to main    → CalVer + run number, e.g. 2026.05.09.42
+          #   workflow_dispatch → use input (default 0.0.0.dev)
+          $isTag = $env:GITHUB_REF.StartsWith("refs/tags/v")
+          $isMain = ("${{ github.event_name }}" -eq "push") -and ($env:GITHUB_REF -eq "refs/heads/main")
+          if ($isTag) {
             $v = $env:GITHUB_REF.Substring("refs/tags/v".Length)
+            $kind = "stable"
+          } elseif ($isMain) {
+            $date = (Get-Date -Format "yyyy.MM.dd")
+            $v = "$date.${{ github.run_number }}"
+            $kind = "continuous"
           } else {
             $v = "${{ inputs.version }}"
+            $kind = "manual"
           }
           echo "version=$v" >> $env:GITHUB_OUTPUT
-          echo "Resolved version: $v"
+          echo "kind=$kind" >> $env:GITHUB_OUTPUT
+          echo "Resolved version: $v (kind=$kind)"
 
       - name: Set up bundled Python (full distribution, not embed-zip)
         # The full distribution lets us ship a working pip + a no-surprises
@@ -140,10 +156,26 @@ jobs:
           path: build/exe/mp-relay-Setup-*.exe
           retention-days: 30
 
-      - name: Attach to GitHub Release (tag pushes only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Attach to GitHub Release — stable (tag pushes)
+        if: steps.ver.outputs.kind == 'stable'
         uses: softprops/action-gh-release@v2
         with:
           files: build/exe/mp-relay-Setup-*.exe
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+      - name: Publish continuous-build Release (main pushes)
+        if: steps.ver.outputs.kind == 'continuous'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Continuous build ${{ steps.ver.outputs.version }}"
+          prerelease: true
+          files: build/exe/mp-relay-Setup-*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            Auto-built from `${{ github.sha }}` on push to `main`.
+
+            For stable releases, push a tag matching `v*` (e.g. `v1.0.0`).
+            This is a rolling continuous build (prerelease).
