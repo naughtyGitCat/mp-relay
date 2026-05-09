@@ -35,6 +35,21 @@ class Settings(BaseSettings):
     mdcx_python: str = r"E:\mdcx-src\.venv\Scripts\python.exe"
     mdcx_module: str = "mdcx.cmd.main"
 
+    # --- Failed-scrape holding ---
+    # Where mp-relay moves staging dirs after a scrape/QC failure (so the
+    # user can find them later, retry, or delete in bulk). Empty = use
+    # ``<staging-parent>/scrapefailed/<basename>/`` (or ``qcfailed/`` for
+    # QC failures) — sibling-collector pattern in the same staging parent.
+    # Set to override that default; e.g. r"E:\Jav_failed".
+    #
+    # Note: this is independent of mdcx's own ``failed_output_folder``
+    # config. If mdcx is configured to move on failure, mdcx's move runs
+    # first and mp-relay's holding move is a no-op (nothing to move). If
+    # both behaviors are desired, use the /setup UI's "let mp-relay
+    # manage failures" toggle which sets mdcx's failed_output_folder=""
+    # via ``mdcx config set``.
+    failed_output_dir: str = ""
+
     # --- Library paths (used by /check existence detection) ---
     # JAV library that mdcx organizes into. Filesystem scan checks for code.
     jav_library: str = r"E:\Jav"

@@ -114,6 +114,30 @@
     <button id="mdcx-save" class="secondary">保存 (B: 指向此路径)</button>
   </div>
   <div class="feedback" id="mdcx-feedback"></div>
+
+  <!-- ============================================================
+       Failed-scrape holding location (mp-relay-managed).
+       Independent of mdcx's own failed_output_folder; the wizard
+       displays mdcx's value below for transparency.
+       ============================================================ -->
+  <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--border)">
+    <h3 style="font-size:13px; color:var(--muted); margin:0 0 6px 0">失败 staging 落点</h3>
+    <p class="desc">
+      QC 或 mdcx 调用失败后，mp-relay 把 staging 目录移到这里（按 kind 分到
+      <code>scrapefailed/</code> 或 <code>qcfailed/</code> 子目录）。<strong>留空</strong>则用
+      默认的同目录 sibling collector：<code>&lt;staging-parent&gt;/scrapefailed/&lt;basename&gt;/</code>。
+    </p>
+    <div class="detail" id="mdcx-failed-detail"></div>
+    <div class="field">
+      <label for="mdcx-failed-dir">MP_FAILED_OUTPUT_DIR</label>
+      <input type="text" id="mdcx-failed-dir" placeholder="(留空 = 默认同目录 scrapefailed/)" autocomplete="off">
+    </div>
+    <div class="actions">
+      <button id="mdcx-failed-save">Save</button>
+      <button id="mdcx-takeover" class="secondary" style="display:none">让 mp-relay 接管 (清掉 mdcx failed_output_folder)</button>
+    </div>
+    <div class="feedback" id="mdcx-failed-feedback"></div>
+  </div>
 </div>
 
 <!-- Install log panel — appears when an install is running OR finished. -->
@@ -264,6 +288,53 @@ mdcxSaveBtn.addEventListener('click', async () => {
 
 mdcxInstallBtn.addEventListener('click', () => triggerInstall('setup-mdcx', '安装 mdcx (~300 MB / 5 min)'));
 
+const mdcxFailedDirInput = document.getElementById('mdcx-failed-dir');
+const mdcxFailedDetail = document.getElementById('mdcx-failed-detail');
+document.getElementById('mdcx-takeover').addEventListener('click', async () => {
+  const btn = document.getElementById('mdcx-takeover');
+  if (!confirm('让 mp-relay 接管失败 staging 管理？\n\n会调用 mdcx config set failed_output_folder ""，从此 mdcx 失败时不再移动文件，由 mp-relay 收纳到 scrapefailed/qcfailed 子目录。\n\n（可逆：之后用 mdcx GUI 或 mdcx config set 命令重新设回路径即可。）')) return;
+  btn.disabled = true;
+  let r, body;
+  try {
+    r = await fetch('/api/setup/mdcx-takeover-failed', { method: 'POST' });
+    body = await r.json();
+  } catch (e) {
+    setFeedback('mdcx-failed-feedback', 'err', `请求失败：${e}`);
+    btn.disabled = false;
+    return;
+  }
+  btn.disabled = false;
+  if (r.ok) {
+    setFeedback('mdcx-failed-feedback', 'ok', body.message || '已接管。');
+    refreshStatus();
+  } else {
+    setFeedback('mdcx-failed-feedback', 'err', body.detail || '接管失败');
+  }
+});
+
+document.getElementById('mdcx-failed-save').addEventListener('click', async () => {
+  const btn = document.getElementById('mdcx-failed-save');
+  btn.disabled = true;
+  const fd = new FormData();
+  fd.set('failed_output_dir', mdcxFailedDirInput.value.trim());
+  let r, body;
+  try {
+    r = await fetch('/api/setup/failed-output-dir', { method: 'POST', body: fd });
+    body = await r.json();
+  } catch (e) {
+    setFeedback('mdcx-failed-feedback', 'err', `请求失败：${e}`);
+    btn.disabled = false;
+    return;
+  }
+  btn.disabled = false;
+  if (r.ok) {
+    setFeedback('mdcx-failed-feedback', 'ok', '已保存到 .env 并热加载。下一次失败的 staging 按新规则归位。');
+    refreshStatus();
+  } else {
+    setFeedback('mdcx-failed-feedback', 'err', body.detail || '保存失败');
+  }
+});
+
 // -------- shared install panel (runs setup-mdcx.ps1 OR setup-moviepilot.ps1) --------
 const installPanel = document.getElementById('install-panel');
 const installLog = document.getElementById('install-log');
@@ -409,6 +480,27 @@ async function refreshStatus() {
     `MDCX_MODULE = ${data.mdcx.config.mdcx_module}` +
     (data.mdcx.error ? `\n\nerror: ${data.mdcx.error}` : '');
   if (!mdcxDir.value) mdcxDir.value = data.mdcx.config.mdcx_dir || '';
+
+  // Failed-output-dir field — populate from current settings, surface
+  // the (possibly conflicting) mdcx-side failed_output_folder for awareness.
+  if (!mdcxFailedDirInput.value) mdcxFailedDirInput.value = data.failed_output_dir || '';
+  const mdcxFailedFolder = data.mdcx.mdcx_failed_output_folder || '';
+  let detailLines = [];
+  if (data.failed_output_dir) {
+    detailLines.push(`mp-relay 当前 = ${data.failed_output_dir}`);
+  } else {
+    detailLines.push(`mp-relay 当前 = (默认 sibling collector)`);
+  }
+  const takeoverBtn = document.getElementById('mdcx-takeover');
+  if (mdcxFailedFolder) {
+    detailLines.push(`mdcx config failed_output_folder = ${mdcxFailedFolder}`);
+    detailLines.push(`(注意：mdcx 失败时会先 move 到上面，mp-relay holding 落空。)`);
+    takeoverBtn.style.display = '';
+  } else {
+    detailLines.push(`mdcx config failed_output_folder = (空)  ✓ mp-relay 接管`);
+    takeoverBtn.style.display = 'none';
+  }
+  mdcxFailedDetail.textContent = detailLines.join('\n');
 
   // MoviePilot — show what's currently in .env (don't auto-trust; user clicks Test)
   document.getElementById('mp-url').value  = data.moviepilot.url || '';

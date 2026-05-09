@@ -213,3 +213,108 @@ def test_parse_mdcx_summary_caps_failed_items():
     stdout = _json.dumps({"total": 20, "success": 0, "failed": 20, "failed_items": items})
     s = _parse_mdcx_summary(stdout)
     assert len(s["failed_items"]) == 5
+
+
+# ---------------------------------------------------------------------------
+# _move_to_failed_holding — sibling-collector pattern + override config
+# ---------------------------------------------------------------------------
+
+def test_move_to_failed_holding_default_pattern(tmp_path, monkeypatch):
+    """Default (no failed_output_dir override): collect under
+    <staging-parent>/scrapefailed/<basename>/."""
+    from app import post_download
+    from app.config import settings
+    monkeypatch.setattr(settings, "failed_output_dir", "")
+
+    staging = tmp_path / "staging" / "SNOS-073"
+    staging.mkdir(parents=True)
+    (staging / "video.mp4").write_bytes(b"fake")
+
+    moved = post_download._move_to_failed_holding(str(staging), kind="scrape")
+    assert moved is not None
+    assert not staging.exists()                                      # original gone
+    assert (tmp_path / "staging" / "scrapefailed" / "SNOS-073").is_dir()
+    assert (tmp_path / "staging" / "scrapefailed" / "SNOS-073" / "video.mp4").is_file()
+
+
+def test_move_to_failed_holding_qc_kind(tmp_path, monkeypatch):
+    """kind='qc' picks the qcfailed/ subdir, not scrapefailed/."""
+    from app import post_download
+    from app.config import settings
+    monkeypatch.setattr(settings, "failed_output_dir", "")
+
+    staging = tmp_path / "staging" / "FAKE-001"
+    staging.mkdir(parents=True)
+    (staging / "manko.fun.mp4").write_bytes(b"x" * 1024)
+
+    moved = post_download._move_to_failed_holding(str(staging), kind="qc")
+    assert moved is not None
+    assert (tmp_path / "staging" / "qcfailed" / "FAKE-001").is_dir()
+    # scrapefailed/ should NOT have been touched
+    assert not (tmp_path / "staging" / "scrapefailed").exists()
+
+
+def test_move_to_failed_holding_uses_override(tmp_path, monkeypatch):
+    """When failed_output_dir is set, target = <override>/<kind>/<basename>/."""
+    from app import post_download
+    from app.config import settings
+    override = tmp_path / "central-failed"
+    monkeypatch.setattr(settings, "failed_output_dir", str(override))
+
+    staging = tmp_path / "staging" / "ABC-001"
+    staging.mkdir(parents=True)
+    (staging / "v.mp4").write_bytes(b"x")
+
+    moved = post_download._move_to_failed_holding(str(staging), kind="scrape")
+    assert moved is not None
+    assert (override / "scrapefailed" / "ABC-001").is_dir()
+    assert (override / "scrapefailed" / "ABC-001" / "v.mp4").is_file()
+
+
+def test_move_to_failed_holding_empty_dir_noop(tmp_path):
+    """If staging is empty (mdcx already moved files out), we no-op."""
+    from app import post_download
+    staging = tmp_path / "staging" / "MOVED-BY-MDCX"
+    staging.mkdir(parents=True)
+    # No files inside
+
+    moved = post_download._move_to_failed_holding(str(staging), kind="scrape")
+    assert moved is None
+    assert staging.exists()                                          # left as-is
+    assert not (tmp_path / "staging" / "scrapefailed").exists()
+
+
+def test_move_to_failed_holding_missing_dir_noop(tmp_path):
+    """If staging dir is gone entirely (e.g. mdcx + del_empty_folder),
+    no-op cleanly without raising."""
+    from app import post_download
+    moved = post_download._move_to_failed_holding(
+        str(tmp_path / "never-existed"), kind="scrape",
+    )
+    assert moved is None
+
+
+def test_move_to_failed_holding_conflict_suffix(tmp_path, monkeypatch):
+    """If destination already exists (e.g. retry of same code that
+    failed once before), append a timestamp suffix instead of clobbering."""
+    from app import post_download
+    from app.config import settings
+    monkeypatch.setattr(settings, "failed_output_dir", "")
+
+    # Simulate a prior failure already moved
+    prior = tmp_path / "staging" / "scrapefailed" / "X-001"
+    prior.mkdir(parents=True)
+    (prior / "old.mp4").write_bytes(b"old")
+
+    # New failure of same code
+    staging = tmp_path / "staging" / "X-001"
+    staging.mkdir(parents=True)
+    (staging / "new.mp4").write_bytes(b"new")
+
+    moved = post_download._move_to_failed_holding(str(staging), kind="scrape")
+    assert moved is not None
+    assert moved != str(prior)                                       # different path
+    # Original prior still has its old content
+    assert (prior / "old.mp4").read_bytes() == b"old"
+    # New move has the new content
+    assert Path(moved, "new.mp4").read_bytes() == b"new"
