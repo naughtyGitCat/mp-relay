@@ -36,6 +36,13 @@
     header { padding: 24px 0 16px; }
     header h1 { margin: 0; font-size: 22px; }
     header .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    header a { color: var(--accent); text-decoration: none; }
+    header a:hover { text-decoration: underline; }
+    .nav { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 13px; }
+    .nav a { color: var(--accent); text-decoration: none; padding: 4px 10px;
+             border: 1px solid var(--border); border-radius: 6px; background: var(--card); }
+    .nav a:hover { border-color: var(--accent); text-decoration: none; }
+    .nav a.health { color: var(--muted); }
 
     .input-card {
       background: var(--card); border: 1px solid var(--border);
@@ -119,7 +126,13 @@
 <body>
   <header>
     <h1>mp-relay</h1>
-    <div class="sub">磁力链 / 媒体名 → 自动分发 (普通媒体走 MoviePilot, JAV 走 mdcx) · <a href="/discover" style="color:var(--accent)">🎬 演员发现</a></div>
+    <div class="sub">磁力链 / 媒体名 → 自动分发 (普通媒体走 MoviePilot, JAV 走 mdcx)</div>
+    <nav class="nav">
+      <a href="/discover" title="按演员 / 系列 / 厂牌 / 类别 / 导演 浏览">🎬 演员发现</a>
+      <a href="/setup" title="配置依赖服务、mdcx 字段、115 授权">⚙️ 配置</a>
+      <a id="nav-c115" href="/auth/115" title="115 网盘扫码授权" style="display:none">☁️ 115 授权</a>
+      <a class="health" href="/health" target="_blank" title="服务健康自检 JSON">🩺 health</a>
+    </nav>
   </header>
 
   <!-- Setup banner: shows only when /api/setup/status reports mdcx unhealthy.
@@ -631,12 +644,18 @@ startPolling();
 // hidden, and any actual scrape error will show up via /health on the
 // task table the same as before.
 const setupBanner = document.getElementById('setup-banner');
+const navC115 = document.getElementById('nav-c115');
 async function checkSetupStatus() {
   try {
     const r = await fetch('/api/setup/status');
     if (!r.ok) return;
     const data = await r.json();
     setupBanner.style.display = data.mdcx && data.mdcx.ok ? 'none' : 'block';
+    // Only surface 115 entry-point in the nav when the user has actually
+    // wired it up — keeps the bar clean for non-115 users.
+    if (navC115) {
+      navC115.style.display = (data.cloud115 && data.cloud115.authorized) ? '' : 'none';
+    }
   } catch { /* ignore — banner stays hidden */ }
 }
 checkSetupStatus();
