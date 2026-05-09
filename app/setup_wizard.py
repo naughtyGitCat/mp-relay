@@ -304,6 +304,49 @@ async def mdcx_config_set(key: str, value: str) -> dict:
     return {"ok": False, "rc": rc, "stderr": (stderr or stdout).strip()[:500]}
 
 
+# Fields the /setup page surfaces. Split into editable (must be in mdcx's
+# own _FIELDS whitelist — verified 2026-05-09) vs display-only (mdcx
+# refuses ``config set``, but we still ``config get`` and warn if the
+# value would break mp-relay's pipeline assumptions). Source of truth
+# for "what's editable" is mdcx, not us — we just mirror the subset we
+# care about.
+MDCX_EDITABLE_FIELDS: tuple[str, ...] = (
+    "success_output_folder",   # where mdcx puts successful scrapes -> Jellyfin lib root
+    "failed_output_folder",    # mdcx-side failure landing (already covered by our takeover button)
+    "website_single",          # primary scrape source when scrape_like=single
+    "scrape_like",             # single | multi | more | escape
+    "media_path",              # default scan dir for `mdcx scrape dir` (no path → cwd)
+    "proxy",                   # http/socks proxy URL for crawlers
+    "timeout",                 # int — per-crawler request timeout (sec)
+    "retry",                   # int — per-crawler retry count
+)
+
+# These mdcx settings are NOT in the whitelist, so we display read-only.
+# We assert the "expected" value mp-relay's pipeline assumes, and the
+# UI shows a warning when it differs (user has to fix in mdcx GUI).
+MDCX_READONLY_FIELDS: dict[str, str] = {
+    "success_file_move":  "true",   # mp-relay assumes mdcx moves on success
+    "del_empty_folder":   "true",   # post_download.run_pipeline relies on this
+    "download_files":     "*poster*thumb*fanart*",  # substring check; downloads must include images
+}
+
+
+async def mdcx_get_surfaced_config() -> dict:
+    """Fetch all surfaced mdcx fields in a single call. Each value is the
+    raw string mdcx's CLI emits (quotes stripped for ``str``-typed; raw
+    JSON for arrays/bools — caller handles formatting)."""
+    out: dict[str, Optional[str]] = {}
+    # Concurrent get for snappier /setup page load
+    keys = list(MDCX_EDITABLE_FIELDS) + list(MDCX_READONLY_FIELDS.keys())
+    results = await asyncio.gather(
+        *(mdcx_config_get(k) for k in keys),
+        return_exceptions=True,
+    )
+    for k, v in zip(keys, results):
+        out[k] = None if isinstance(v, Exception) else v
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Connectivity probes — run on "Test connection" click. Each returns the
 # usual {ok, error, ...detail} shape so the UI can surface success/failure
