@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="docs/banner.jpg"
+       alt="mp-relay — Adam, Eve, a Python and the forbidden digital fruit, watercolor"
+       width="100%">
+</p>
+
 # mp-relay
 
 把"贴磁力链 / 输入媒体名 / 输入番号 / 找演员"统一收口到一个 Web UI，
