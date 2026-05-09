@@ -346,11 +346,18 @@ def test_looks_like_expired_token_response_classification():
     assert not _looks_like_expired_token_response([])
 
 
-def test_healthcheck_unauthorized_message(monkeypatch):
+def test_healthcheck_unauthorized_returns_disabled_string(monkeypatch):
+    """When 115 isn't authorized, healthcheck returns a ``"disabled (...)"``
+    string — distinct from real errors so callers can treat it as opt-out
+    rather than a failure. Users without a 115 membership shouldn't see
+    "ok=false" on /health."""
     _isolated_db(monkeypatch)
     from app import cloud115
     err = asyncio.run(cloud115.healthcheck())
-    assert err and "unauthorized" in err.lower()
+    assert err is not None
+    assert err.startswith("disabled")
+    # Mentions how to enable (so the user can act on it)
+    assert "/auth/115" in err
 
 
 def test_healthcheck_authorized_calls_quota(monkeypatch):

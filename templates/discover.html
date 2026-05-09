@@ -151,7 +151,8 @@
       隐藏已拥有
     </label>
     <button id="bulk-btn" disabled>批量加入 qBT</button>
-    <button id="bulk-115-btn" disabled>批量加入 115</button>
+    <!-- 115 button hidden by default; JS unhides when /api/setup/status reports authorized=true -->
+    <button id="bulk-115-btn" disabled style="display:none">批量加入 115</button>
     <span id="bulk-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
 
@@ -420,6 +421,21 @@ document.getElementById('bulk-115-btn').addEventListener('click', () => runBulk(
 searchBtn.addEventListener('click', () => doSearch(false));
 refreshBtn.addEventListener('click', () => doSearch(true));
 q.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(false); });
+
+// 115 is opt-in. The "批量加入 115" button is hidden by default and only
+// unhidden if /api/setup/status reports authorized=true. Users without 115
+// membership never see it. Re-checks once on load — if user authorizes
+// later, refresh the page (or rely on the index banner re-check).
+(async function checkCloud115Auth() {
+  try {
+    const r = await fetch('/api/setup/status');
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.cloud115 && data.cloud115.authorized) {
+      document.getElementById('bulk-115-btn').style.display = '';
+    }
+  } catch { /* leave hidden on error */ }
+})();
 
 {% if initial_name %}
 searchActors(false);

@@ -197,6 +197,23 @@
   <div class="feedback" id="jf-feedback"></div>
 </div>
 
+<!-- ============================================================
+     115 cloud-drive — opt-in. Card only renders auth UI; tokens are
+     a separate concern from the URL/credential cards above.
+     ============================================================ -->
+<div class="card" id="card-c115">
+  <h3>115 网盘 <span class="badge" id="c115-badge">可选</span></h3>
+  <p class="desc">可选。有 115 会员时启用：种子推 115 离线下载 → 完成后自动同步到本地 → mdcx 刮削归档（不占本地带宽）。无 115 会员忽略即可，全套功能依旧可用。</p>
+  <div class="detail" id="c115-detail">检测中…</div>
+  <div class="actions">
+    <a id="c115-auth-btn" href="/auth/115" target="_blank" style="display:none">
+      <button class="secondary" type="button">扫码授权</button>
+    </a>
+    <button id="c115-clear-btn" class="danger" style="display:none">清除授权（关闭 115）</button>
+  </div>
+  <div class="feedback" id="c115-feedback"></div>
+</div>
+
 <p style="margin-top: 24px; color: var(--muted); font-size: 12px;">
   保存的字段会立即热加载到运行中的 mp-relay；无需 <code>Restart-Service</code>。
   · <a href="/health" target="_blank">/health</a>
@@ -410,7 +427,45 @@ async function refreshStatus() {
   if (data.jellyfin.has_api_key) {
     document.getElementById('jf-key').placeholder = '(API key 已设置；留空表示沿用)';
   }
+
+  // 115: opt-in. Show auth or clear button depending on current state.
+  // Card never goes 'err' — disabled is a normal state, not an error.
+  const c115 = data.cloud115 || {};
+  const c115Badge = document.getElementById('c115-badge');
+  const c115Detail = document.getElementById('c115-detail');
+  const c115AuthBtn = document.getElementById('c115-auth-btn');
+  const c115ClearBtn = document.getElementById('c115-clear-btn');
+  if (c115.authorized) {
+    setBadge('c115-badge', 'ok', '✓ 已授权');
+    setCardState('card-c115', 'ok');
+    c115Detail.textContent = `已授权 · 离线落库 cid: ${c115.save_dir_id || '(默认 我的接收)'}`;
+    c115AuthBtn.style.display = 'none';
+    c115ClearBtn.style.display = '';
+  } else {
+    setBadge('c115-badge', null, '未启用');
+    setCardState('card-c115', null);
+    c115Detail.textContent = '未授权 — 不影响 mp-relay 其他功能。授权后种子可推送到 115 离线下载。';
+    c115AuthBtn.style.display = '';
+    c115ClearBtn.style.display = 'none';
+  }
 }
+
+document.getElementById('c115-clear-btn').addEventListener('click', async () => {
+  if (!confirm('确定清除 115 授权？已在 115 队列里的任务不受影响，但新的 /api/cloud115-add 请求会被拒。')) return;
+  try {
+    const r = await fetch('/api/cloud115/clear', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      setFeedback('c115-feedback', 'ok', '已清除 115 授权。');
+      refreshStatus();
+    } else {
+      setFeedback('c115-feedback', 'err', data.error || '清除失败');
+    }
+  } catch (e) {
+    setFeedback('c115-feedback', 'err', `请求失败：${e}`);
+  }
+});
+
 refreshStatus();
 </script>
 </body>

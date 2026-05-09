@@ -150,15 +150,36 @@ async def _sync_one(mp_row: dict, c115_task: dict) -> None:
 
 
 async def cloud115_watch_loop(stop: asyncio.Event) -> None:
-    """Top-level loop — runs until ``stop`` is set."""
-    interval = settings.cloud115_poll_interval_sec
-    log.info("cloud115 watcher started (interval=%ss)", interval)
+    """Top-level loop — runs until ``stop`` is set.
+
+    Adaptive polling:
+      - When 115 is authorized: poll every ``cloud115_poll_interval_sec``
+        (60s default) — same as before
+      - When 115 is NOT authorized (user without 115 membership, or token
+        was cleared): poll every 5 minutes for re-auth so freshly-authorized
+        users don't have to restart the service. No 115 API calls in this
+        state, so it's free.
+
+    This makes 115 strictly opt-in: never-authorized users see no errors
+    and incur no overhead beyond a 5-min check-and-skip.
+    """
+    interval_active   = settings.cloud115_poll_interval_sec
+    interval_idle_min = 300  # 5 min when unauthorized
+    log.info("cloud115 watcher started (interval=%ss when active, %ss when idle)",
+             interval_active, interval_idle_min)
 
     while not stop.is_set():
-        try:
-            await _scan_and_sync_once()
-        except Exception as e:
-            log.exception("cloud115 watch tick crashed: %s", e)
+        if cloud115.is_authorized():
+            try:
+                await _scan_and_sync_once()
+            except Exception as e:
+                log.exception("cloud115 watch tick crashed: %s", e)
+            interval = interval_active
+        else:
+            # No noisy log here — this is the normal state for users without
+            # 115 membership. The /health endpoint surfaces the disabled state.
+            interval = interval_idle_min
+
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
         except asyncio.TimeoutError:
