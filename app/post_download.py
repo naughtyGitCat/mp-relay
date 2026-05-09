@@ -18,9 +18,12 @@ cloud sync. The caller passes (target_dir, task_id, optional retry_handler).
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
+import os
 import re
+import shutil
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -30,6 +33,61 @@ from .exists import extract_code
 from .mdcx_runner import scrape_dir
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Failed-scrape holding — move staging dirs to a holding location on failure
+# so they're easy to find / retry / bulk-delete later.
+# ---------------------------------------------------------------------------
+
+def _move_to_failed_holding(staging_dir: str, kind: str) -> Optional[str]:
+    """Move ``staging_dir`` to a failed-holding location.
+
+    ``kind`` picks the subdir name and is one of:
+      - ``"scrape"`` — mdcx-side failures (rc != 0 / no_match / failed_items)
+      - ``"qc"``     — QC-side failures (fake video, undersize, etc.)
+
+    Resolves destination root as:
+      - ``settings.failed_output_dir / <kind>...`` if set
+      - else ``<staging_parent> / <kind>...`` (sibling-collector default)
+
+    Returns the new path, or ``None`` if nothing to move:
+      - target dir doesn't exist (already moved by mdcx, or never existed)
+      - target dir is empty (mdcx moved files out, left empty staging)
+      - filesystem move failed (logged at WARNING)
+
+    On success the original ``staging_dir`` no longer exists. Conflict
+    handling: if dest path is taken, append a ``.YYYYmmdd-HHMMSS`` suffix.
+    """
+    if not staging_dir or not os.path.isdir(staging_dir):
+        return None
+    try:
+        if not any(os.scandir(staging_dir)):
+            log.debug("[failed-move] %s is empty — mdcx already moved files; no-op", staging_dir)
+            return None
+    except OSError as e:
+        log.warning("[failed-move] could not scan %s: %s", staging_dir, e)
+        return None
+
+    src = Path(staging_dir)
+    sub = "scrapefailed" if kind == "scrape" else "qcfailed"
+    base = (settings.failed_output_dir or "").strip()
+    dest_root = Path(base) / sub if base else src.parent / sub
+
+    dest = dest_root / src.name
+    if dest.exists():
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = dest.with_name(f"{dest.name}.{ts}")
+
+    try:
+        dest_root.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest))
+    except OSError as e:
+        log.warning("[failed-move] %s -> %s failed: %s", src, dest, e)
+        return None
+
+    log.info("[failed-move] %s -> %s (kind=%s)", src, dest, kind)
+    return str(dest)
 
 
 # ---------------------------------------------------------------------------
@@ -256,10 +314,13 @@ async def _qc_and_maybe_retry(
         await retry_handler(tid, code, failed_hash, qc_result.reason)
         return False
 
-    # No retry path possible — terminal failure.
+    # No retry path possible — terminal failure. Move staging to qcfailed/
+    # so it's out of the active staging dir + easy to bulk-clean later.
+    moved_to = _move_to_failed_holding(target, kind="qc")
     store.update(
         tid, state="qc_failed",
         error=f"QC failed and no retry path: {qc_result.reason}",
+        save_path=moved_to or target,
     )
     m.QC_RETRY.labels(outcome="no_code" if not code else "no_handler").inc()
     m.PIPELINE_RUN_TOTAL.labels(terminal_state="qc_failed_no_code").inc()
@@ -267,6 +328,7 @@ async def _qc_and_maybe_retry(
         "qc_failed_no_code" if not code else "qc_failed_no_retry",
         "QC 失败" + ("，但无法从名称提取番号无法自动重试" if not code else "，且当前路径不支持重试"),
         task=tid, name=name[:80], reason=qc_result.reason,
+        moved_to=moved_to or "(unchanged)",
     )
     return False
 
@@ -348,9 +410,11 @@ async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
         m.MDCX_RUN.labels(result="timeout" if is_timeout else "fail").inc()
         m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="fail").inc()
         m.PIPELINE_RUN_TOTAL.labels(terminal_state="scrape_failed").inc()
+        moved_to = _move_to_failed_holding(target, kind="scrape")
         store.update(
             tid, state="scrape_failed", mdcx_result=result,
             error=(result.get("stderr") or "")[:1000],
+            save_path=moved_to or target,
         )
         log.error("[scrape] task=%s FAILED rc=%s", tid, result["rc"])
         await notify.notify(
@@ -358,6 +422,7 @@ async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
             f"mdcx 刮削失败 (rc={result['rc']}{'/timeout' if is_timeout else ''})",
             task=tid, name=name[:80],
             stderr=(result.get("stderr") or "")[:200],
+            moved_to=moved_to or "(unchanged)",
         )
         return
 
@@ -397,15 +462,17 @@ async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
         m.MDCX_RUN.labels(result="no_match").inc()
         m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="fail").inc()
         m.PIPELINE_RUN_TOTAL.labels(terminal_state="scrape_no_match").inc()
+        moved_to = _move_to_failed_holding(target, kind="scrape")
         store.update(
             tid, state="scrape_no_match", mdcx_result=result,
             error="mdcx scanned 0 files (filename / path chars may block detection)",
+            save_path=moved_to or target,
         )
         log.warning("[scrape] task=%s NO_MATCH (total=0) at %s", tid, target)
         await notify.notify(
             "scrape_no_match",
             "mdcx 跑完但识别到 0 个视频 — 检查文件名是否含 []/@/前缀",
-            task=tid, name=name[:80], path=target,
+            task=tid, name=name[:80], path=moved_to or target,
         )
         return
 
@@ -420,9 +487,11 @@ async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
     m.MDCX_RUN.labels(result="failed_items").inc()
     m.PIPELINE_STEP_TOTAL.labels(step="mdcx", outcome="fail").inc()
     m.PIPELINE_RUN_TOTAL.labels(terminal_state="scrape_failed_items").inc()
+    moved_to = _move_to_failed_holding(target, kind="scrape")
     store.update(
         tid, state="scrape_failed_items", mdcx_result=result,
         error=f"mdcx counted {summary['total']} but all failed: {reason_summary}"[:500],
+        save_path=moved_to or target,
     )
     log.warning(
         "[scrape] task=%s FAILED_ITEMS total=%d failed=%d: %s",
@@ -432,6 +501,7 @@ async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
         "scrape_failed_items",
         f"mdcx 识别到 {summary['total']} 个文件但全部失败",
         task=tid, name=name[:80], reason=reason_summary[:200],
+        moved_to=moved_to or "(unchanged)",
     )
 
 

@@ -154,10 +154,17 @@ async def api_setup_status():
     115 special case: surfaces both the auth status (whether tokens
     are persisted) and the configured save_dir_id. Users without a
     115 membership see ``authorized=false`` and the wizard renders an
-    "Authorize" CTA instead of credential fields. Truly opt-in."""
+    "Authorize" CTA instead of credential fields. Truly opt-in.
+
+    Also reads mdcx's own ``failed_output_folder`` via ``mdcx config get``
+    so the wizard can surface the ``mp-relay failed_output_dir`` /
+    ``mdcx failed_output_folder`` interaction (mdcx's value, if set,
+    means mdcx moves first and mp-relay's holding is a no-op)."""
     mdcx = await setup_wizard.detect()
+    mdcx["mdcx_failed_output_folder"] = await setup_wizard.mdcx_config_get("failed_output_folder")
     return {
         "mdcx": mdcx,
+        "failed_output_dir": settings.failed_output_dir,
         "moviepilot": {
             "url": settings.mp_url,
             "user": settings.mp_user,
@@ -294,6 +301,45 @@ async def api_setup_configure(mdcx_dir: str = Form(...)):
 
     # Re-probe so the response confirms the new config actually works.
     return {"ok": True, "applied": updates, "health": await setup_wizard.detect()}
+
+
+@app.post("/api/setup/failed-output-dir")
+async def api_setup_failed_output_dir(failed_output_dir: str = Form("")):
+    """Save the ``failed_output_dir`` setting (where mp-relay moves
+    staging dirs after a scrape/QC failure). Empty value = use the
+    sibling-collector default (<staging-parent>/scrapefailed/<basename>/).
+
+    No path validation here — mp-relay creates the dir lazily on first
+    failure. We don't want to fail save just because the dir doesn't
+    exist yet (a non-existent path may be on a removable drive)."""
+    final = (failed_output_dir or "").strip()
+    setup_wizard.write_env_keys({"FAILED_OUTPUT_DIR": final})
+    setup_wizard.apply_settings_in_place({"FAILED_OUTPUT_DIR": final})
+    return {"ok": True, "applied": {"FAILED_OUTPUT_DIR": final or "(empty — sibling-collector default)"}}
+
+
+@app.post("/api/setup/mdcx-takeover-failed")
+async def api_setup_mdcx_takeover_failed():
+    """Tell mdcx to STOP moving files on failure (sets mdcx config's
+    ``failed_output_folder`` to empty string via ``mdcx config set``).
+
+    With mdcx's failed_output_folder empty, mdcx leaves files in their
+    staging location after a failed scrape. mp-relay's
+    ``_move_to_failed_holding`` then catches them and moves to its
+    configured location. Without this, mdcx moves first and mp-relay's
+    holding stays empty.
+
+    Idempotent: setting an already-empty field is a no-op. Whitelist-
+    enforced by mdcx itself (failed_output_folder is in mdcx's _FIELDS
+    so the set is allowed)."""
+    result = await setup_wizard.mdcx_config_set("failed_output_folder", "")
+    if not result.get("ok"):
+        raise HTTPException(502, f"mdcx config set failed: {result.get('stderr', 'unknown')}")
+    return {
+        "ok": True,
+        "message": "mdcx 不再移动失败的 staging — mp-relay 的 failed_output_dir 接管所有失败 holding",
+        "stdout": result.get("stdout", ""),
+    }
 
 
 @app.post("/api/setup/install")

@@ -232,6 +232,7 @@ _FIELD_MAP: dict[str, str] = {
     "MDCX_DIR": "mdcx_dir",
     "MDCX_PYTHON": "mdcx_python",
     "MDCX_MODULE": "mdcx_module",
+    "FAILED_OUTPUT_DIR": "failed_output_dir",
     "MP_URL": "mp_url",
     "MP_USER": "mp_user",
     "MP_PASS": "mp_pass",
@@ -241,6 +242,66 @@ _FIELD_MAP: dict[str, str] = {
     "JELLYFIN_URL": "jellyfin_url",
     "JELLYFIN_API_KEY": "jellyfin_api_key",
 }
+
+
+# ---------------------------------------------------------------------------
+# mdcx config bridge — uses the fork's CLI (`mdcx config get/set/path`)
+# rather than parsing config.v2.json directly. Insulates us from mdcx's
+# config schema, lets mdcx validate on write, and avoids needing to know
+# where config.v2.json lives. Cached for cheap polling.
+# ---------------------------------------------------------------------------
+
+async def _mdcx_config_invoke(*args: str) -> tuple[int, str, str]:
+    """Run ``python -m mdcx.cmd.main config <args...>``. Returns
+    ``(rc, stdout, stderr)``. ``rc=-1`` if the call couldn't be
+    spawned (mdcx not configured / not on Windows / missing python)."""
+    if sys.platform != "win32":
+        return (-1, "", "not on Windows")
+    if not (settings.mdcx_python and settings.mdcx_dir and settings.mdcx_module):
+        return (-1, "", "mdcx not configured")
+    py = settings.mdcx_python
+    if not os.path.isfile(py):
+        return (-1, "", f"mdcx python not found: {py}")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            py, "-m", settings.mdcx_module, "config", *args,
+            cwd=settings.mdcx_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+    except (asyncio.TimeoutError, OSError) as e:
+        return (-1, "", f"spawn failed: {e}")
+    return (
+        proc.returncode or 0,
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace"),
+    )
+
+
+async def mdcx_config_get(key: str) -> Optional[str]:
+    """Run ``mdcx config get <key>`` and return the value (or None on error
+    / mdcx not configured). The fork prints the value as a JSON string,
+    so strip surrounding quotes if present."""
+    rc, stdout, _ = await _mdcx_config_invoke("get", key)
+    if rc != 0:
+        return None
+    raw = stdout.strip()
+    # mdcx's `config get` emits a JSON-quoted string for str fields; strip.
+    if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+        raw = raw[1:-1]
+    return raw
+
+
+async def mdcx_config_set(key: str, value: str) -> dict:
+    """Run ``mdcx config set <key> <value>`` to mutate mdcx's persisted
+    config (config.v2.json). The fork validates against an internal
+    ``_FIELDS`` whitelist; non-whitelisted keys return non-zero. Empty
+    string is a valid value for path-type fields (means "unset")."""
+    rc, stdout, stderr = await _mdcx_config_invoke("set", key, value)
+    if rc == 0:
+        return {"ok": True, "stdout": stdout.strip()}
+    return {"ok": False, "rc": rc, "stderr": (stderr or stdout).strip()[:500]}
 
 
 # ---------------------------------------------------------------------------
