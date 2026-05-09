@@ -16,8 +16,18 @@ Build details for the `.exe`: see [`../build/README.md`](../build/README.md).
 1. Download `mp-relay-Setup-<version>.exe` from Releases.
 2. Double-click → wizard. Default `C:\Program Files (x86)\mp-relay\` — or pick any drive with space (E: recommended on this homelab to keep the boot SSD free).
 3. Keep the **Install as Windows service** task checked (default).
-4. Wizard finishes → Notepad opens `.env` automatically. Fill in `MP_PASS`, `QBT_PASS`, mdcx paths, save, close. **The service won't pass /health until you do this.**
+4. **Recommended**: open `http://localhost:5000/setup` in browser → 4 cards
+   (mdcx / MoviePilot / qBittorrent / Jellyfin), fill URL+creds, click
+   "Test connection" then "Save" on each. Hot-loaded into running settings,
+   no service restart. (Old workflow of editing `.env` in Notepad still
+   works — wizard does the same I/O on `.env`.)
 5. `services.msc → mp-relay → Start` (or `Restart-Service mp-relay`). Open `http://localhost:5000`.
+
+The `/setup` page also has "下载并安装" buttons that auto-install **mdcx**
+(via `setup-mdcx.ps1`, ~5 min, ~300 MB) and **MoviePilot** (via
+`setup-moviepilot.ps1`, downloads latest Windows-MoviePilot release at
+runtime) if you don't have them yet. Tail their progress in the
+in-page log panel.
 
 Upgrades: just run the new installer over the existing install. `.env` and `state.db` survive untouched. The wizard stops the running service before file copy and restarts it after.
 
