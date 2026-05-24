@@ -219,15 +219,37 @@ def apply_settings_in_place(updates: dict[str, str]) -> None:
 
     Maps the .env-style UPPER_SNAKE keys to settings' lower_snake attrs.
     Adding a new config? Extend ``_FIELD_MAP``.
+
+    .env values are always strings; settings fields may be str/int/bool/float.
+    We coerce based on the *current* attr type so bool fields don't get
+    silently set to the truthy string ``"false"``.
     """
     for key, value in updates.items():
         attr = _FIELD_MAP.get(key)
-        if attr and hasattr(settings, attr):
-            setattr(settings, attr, value)
+        if not (attr and hasattr(settings, attr)):
+            continue
+        current = getattr(settings, attr)
+        coerced: object = value
+        if isinstance(current, bool):
+            coerced = value.strip().lower() in ("1", "true", "yes", "on")
+        elif isinstance(current, int) and not isinstance(current, bool):
+            try:
+                coerced = int(value)
+            except ValueError:
+                continue
+        elif isinstance(current, float):
+            try:
+                coerced = float(value)
+            except ValueError:
+                continue
+        # str: pass through as-is
+        setattr(settings, attr, coerced)
 
 
 # .env key -> settings attribute name. Extend as new services are wired
-# into the setup page.
+# into the setup page. Type is taken from the current settings attr, so
+# bool / int / float fields are coerced from the .env string in
+# ``apply_settings_in_place``.
 _FIELD_MAP: dict[str, str] = {
     "MDCX_DIR": "mdcx_dir",
     "MDCX_PYTHON": "mdcx_python",
@@ -241,6 +263,7 @@ _FIELD_MAP: dict[str, str] = {
     "QBT_PASS": "qbt_pass",
     "JELLYFIN_URL": "jellyfin_url",
     "JELLYFIN_API_KEY": "jellyfin_api_key",
+    "AUTO_DISPATCH_ON_EXTERNAL_TORRENT": "auto_dispatch_on_external_torrent",
 }
 
 

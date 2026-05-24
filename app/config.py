@@ -104,6 +104,17 @@ class Settings(BaseSettings):
     # this many attempts before giving up.
     qc_max_retries: int = 3
 
+    # Dispatch policy for the qBT watcher:
+    #   True  (default, backward-compat) — pick up ANY completed torrent in
+    #         ``qbt_jav_category`` and run the post-download pipeline.
+    #   False — strict mode: only act on torrents that mp-relay itself added
+    #         (i.e. a pre-existing ``tasks`` row with matching hash). Torrents
+    #         added externally (qBT WebUI / magnet link / .torrent file / API)
+    #         are left alone — the user manages them by hand.
+    # The cloud115 watcher is unaffected because it only ever processes
+    # ``cloud_offline_115`` tasks that mp-relay itself created.
+    auto_dispatch_on_external_torrent: bool = True
+
     # --- Notifications (Telegram) ---
     # Empty disables; on terminal pipeline events (qc exhausted, scrape failed,
     # first successful merge, etc.) mp-relay sends a short message to this chat.

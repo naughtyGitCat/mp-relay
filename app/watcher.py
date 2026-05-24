@@ -214,8 +214,9 @@ async def _process_done(qbt: QbtClient, t: dict) -> None:
 async def watch_loop(stop: asyncio.Event) -> None:
     """Main watcher loop. Polls qBT every settings.watcher_interval_sec."""
     qbt = QbtClient()
-    log.info("watcher started (interval=%ss, category=%s)",
-             settings.watcher_interval_sec, settings.qbt_jav_category)
+    log.info("watcher started (interval=%ss, category=%s, strict_dispatch=%s)",
+             settings.watcher_interval_sec, settings.qbt_jav_category,
+             not settings.auto_dispatch_on_external_torrent)
 
     seen_done: set[str] = set()  # in-memory dedupe; store.find_by_hash is the durable check
 
@@ -241,6 +242,14 @@ async def watch_loop(stop: asyncio.Event) -> None:
             if h in seen_done:
                 continue
             seen_done.add(h)
+            # Strict-dispatch mode: only process torrents mp-relay itself
+            # added (i.e. a tasks row already exists for this hash). Torrents
+            # added externally — qBT WebUI, magnet, .torrent, API — are
+            # left alone for the user to manage by hand.
+            if not settings.auto_dispatch_on_external_torrent:
+                if store.find_by_hash(h) is None:
+                    log.debug("hash=%s not added by mp-relay (strict mode), skipping", h[:8])
+                    continue
             try:
                 await _process_done(qbt, t)
             except Exception as e:
