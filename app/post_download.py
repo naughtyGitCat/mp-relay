@@ -36,12 +36,45 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Failed-scrape holding — move staging dirs to a holding location on failure
-# so they're easy to find / retry / bulk-delete later.
+# Failed-scrape holding — clone staging dirs to a holding location on failure
+# so they're easy to find / retry / bulk-delete later. Source is PRESERVED
+# (qBT-seed friendly: PT torrents stay seedable from staging after the
+# failure-tag is recorded).
 # ---------------------------------------------------------------------------
 
+def _clone_preserve_source(src: Path, dest: Path) -> None:
+    """Clone ``src`` to ``dest``, preserving ``src``.
+
+    Tries hardlink first (zero extra disk on same volume); falls back to a
+    real copy on cross-volume / FS limitations.
+
+    NOTE: hardlink means ``src`` and ``dest`` share storage. Deleting one
+    name is safe (the other survives), but if qBT later rewrites bytes in
+    ``src`` (e.g. recheck-triggered redownload), ``dest`` sees the same
+    writes. That's a known and accepted trade-off for the failed-holding
+    audit use-case.
+    """
+    if src.is_file():
+        try:
+            os.link(str(src), str(dest))
+        except OSError:
+            shutil.copy2(str(src), str(dest))
+        return
+    for src_root, _dirs, files in os.walk(str(src)):
+        rel = os.path.relpath(src_root, str(src))
+        dest_root_d = str(dest) if rel == "." else str(dest / rel)
+        os.makedirs(dest_root_d, exist_ok=True)
+        for f in files:
+            sp = os.path.join(src_root, f)
+            dp = os.path.join(dest_root_d, f)
+            try:
+                os.link(sp, dp)
+            except OSError:
+                shutil.copy2(sp, dp)
+
+
 def _move_to_failed_holding(staging_dir: str, kind: str) -> Optional[str]:
-    """Move ``staging_dir`` to a failed-holding location.
+    """Clone ``staging_dir`` to a failed-holding location (source preserved).
 
     ``kind`` picks the subdir name and is one of:
       - ``"scrape"`` — mdcx-side failures (rc != 0 / no_match / failed_items)
@@ -51,22 +84,26 @@ def _move_to_failed_holding(staging_dir: str, kind: str) -> Optional[str]:
       - ``settings.failed_output_dir / <kind>...`` if set
       - else ``<staging_parent> / <kind>...`` (sibling-collector default)
 
-    Returns the new path, or ``None`` if nothing to move:
+    Returns the new (cloned) path, or ``None`` if nothing to clone:
       - target dir doesn't exist (already moved by mdcx, or never existed)
       - target dir is empty (mdcx moved files out, left empty staging)
-      - filesystem move failed (logged at WARNING)
+      - filesystem clone failed (logged at WARNING)
 
-    On success the original ``staging_dir`` no longer exists. Conflict
-    handling: if dest path is taken, append a ``.YYYYmmdd-HHMMSS`` suffix.
+    On success the original ``staging_dir`` is **preserved** so qBT can
+    keep seeding from it (PT-seed safety). Conflict handling: if dest
+    path is taken, append a ``.YYYYmmdd-HHMMSS`` suffix.
+
+    Function name kept for backward compat — semantics changed from move
+    to clone (hardlink + copy-fallback) in 2026-05.
     """
     if not staging_dir or not os.path.isdir(staging_dir):
         return None
     try:
         if not any(os.scandir(staging_dir)):
-            log.debug("[failed-move] %s is empty — mdcx already moved files; no-op", staging_dir)
+            log.debug("[failed-clone] %s is empty — mdcx already moved files; no-op", staging_dir)
             return None
     except OSError as e:
-        log.warning("[failed-move] could not scan %s: %s", staging_dir, e)
+        log.warning("[failed-clone] could not scan %s: %s", staging_dir, e)
         return None
 
     src = Path(staging_dir)
@@ -81,12 +118,12 @@ def _move_to_failed_holding(staging_dir: str, kind: str) -> Optional[str]:
 
     try:
         dest_root.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dest))
+        _clone_preserve_source(src, dest)
     except OSError as e:
-        log.warning("[failed-move] %s -> %s failed: %s", src, dest, e)
+        log.warning("[failed-clone] %s -> %s failed: %s", src, dest, e)
         return None
 
-    log.info("[failed-move] %s -> %s (kind=%s)", src, dest, kind)
+    log.info("[failed-clone] %s -> %s (kind=%s, source preserved)", src, dest, kind)
     return str(dest)
 
 
