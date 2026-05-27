@@ -344,10 +344,38 @@ async def healthcheck() -> Optional[str]:
     try:
         resp = await quota_info()
         if isinstance(resp, dict) and resp.get("state") is False:
-            return f"quota probe rejected: {resp.get('message') or resp.get('error') or resp}"
+            rejection = resp.get("message") or resp.get("error") or resp
+            return f"quota probe rejected: {_truncate_for_status(str(rejection))}"
         return None
     except Exception as e:
-        return f"cloud115 probe error: {e}"
+        # p115client occasionally wraps an undecodable response body into an
+        # OSError whose strerror is raw bytes — e.g. ``OSError(61, b'\\x81R8...')``.
+        # ``str(e)`` on that emits hundreds of ``\\x``-escaped chars straight
+        # into the /health JSON, drowning the rest of the payload. Log the
+        # full repr at WARNING (so it's recoverable from service-stderr.log
+        # for diagnosis) and return a short, bounded summary to the caller.
+        #
+        # This category of error usually means the access_token rolled in a
+        # way our marker-based refresh (_TOKEN_EXPIRED_MARKERS) missed: the
+        # binary blob is the (encrypted) response body the SDK couldn't
+        # decode under the expired key. If you see this persistently, the
+        # fix is to re-authorize via /auth/115.
+        log.warning("cloud115 healthcheck failed (full): %r", e)
+        detail = _truncate_for_status(f"{type(e).__name__}: {e}")
+        return f"cloud115 probe error: {detail} — if persistent, re-auth via /auth/115"
+
+
+# Cap any error string we surface in /health JSON. Long enough to keep the
+# real cause readable, short enough that one bad probe can't drown the
+# rest of the payload.
+_STATUS_DETAIL_MAX: int = 200
+
+
+def _truncate_for_status(s: str) -> str:
+    """Truncate a probe-error string for inclusion in /health JSON output."""
+    if len(s) <= _STATUS_DETAIL_MAX:
+        return s
+    return s[:_STATUS_DETAIL_MAX] + "…(truncated; see service-stderr.log)"
 
 
 # ---------------------------------------------------------------------------

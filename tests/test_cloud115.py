@@ -375,3 +375,71 @@ def test_healthcheck_authorized_calls_quota(monkeypatch):
 
     err = asyncio.run(cloud115.healthcheck())
     assert err is None
+
+
+def test_healthcheck_binary_oserror_does_not_leak_full_blob(monkeypatch):
+    """Regression: p115client sometimes wraps an undecodable response body
+    into ``OSError(errno, b'<binary blob>')``. Old code did
+    ``f"cloud115 probe error: {e}"`` which let ``str(OSError)`` splatter
+    hundreds of ``\\x``-escaped bytes into /health JSON. The fix should:
+
+      - bound the returned string to something readable
+      - surface the exception type so the user knows what kind of failure
+      - point at the actionable fix (/auth/115 re-authorize)
+    """
+    _isolated_db(monkeypatch)
+    from app import cloud115
+    cloud115.save_tokens("at", "rt")
+
+    # Simulate the exact wrapping p115client does on a sign-failure with
+    # expired token — a long opaque byte blob as strerror.
+    binary_blob = (b"\x81R8\xbf\xc5E\xde\xae\x1dS\x82#\x94\xdf\xa1\x1d0" * 50)
+    assert len(binary_blob) > 500  # well over our truncation cap
+
+    async def fake_quota(self, **kw):
+        raise OSError(61, binary_blob)
+
+    monkeypatch.setattr(
+        "app.cloud115.P115OpenClient.offline_quota_info_open",
+        fake_quota,
+    )
+
+    err = asyncio.run(cloud115.healthcheck())
+    assert err is not None
+    # Bounded: even with a multi-KB binary payload, the returned string
+    # must stay short enough that /health JSON remains usable.
+    assert len(err) < 400, f"error string too long: {len(err)} chars"
+    # Exception type surfaced so caller can distinguish OS-level failure
+    # from app-level. Note Python auto-promotes ``OSError(61, ...)`` to
+    # ``ConnectionRefusedError`` on POSIX hosts (errno-based subclass
+    # dispatch). On Windows where errno 61 doesn't map to a known
+    # subclass, it stays ``OSError``. Accept either.
+    assert "OSError" in err or "ConnectionRefusedError" in err
+    # Truncation marker present
+    assert "truncated" in err
+    # Actionable hint
+    assert "/auth/115" in err
+
+
+def test_healthcheck_truncates_long_quota_rejection(monkeypatch):
+    """The state=False rejection path also goes through the truncator —
+    defensive in case 115 ever returns a multi-KB ``message`` field."""
+    _isolated_db(monkeypatch)
+    from app import cloud115
+    cloud115.save_tokens("at", "rt")
+
+    long_msg = "rate-limited: " + ("x" * 1000)
+
+    async def fake_quota(self, **kw):
+        return {"state": False, "message": long_msg}
+
+    monkeypatch.setattr(
+        "app.cloud115.P115OpenClient.offline_quota_info_open",
+        fake_quota,
+    )
+
+    err = asyncio.run(cloud115.healthcheck())
+    assert err is not None
+    assert err.startswith("quota probe rejected:")
+    assert len(err) < 400
+    assert "truncated" in err
