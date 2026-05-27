@@ -255,7 +255,7 @@ def _looks_like_expired_token_response(resp: object) -> bool:
     return any(hint.lower() in msg for hint in _TOKEN_EXPIRED_RESP_HINTS)
 
 
-async def _call(method_name: str, *args, **kwargs) -> dict:
+async def _call(method_name: str, *args: Any, **kwargs: Any) -> dict:
     """Invoke a P115OpenClient method, refreshing tokens once on expiry.
 
     Two refresh paths:

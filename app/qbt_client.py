@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -37,7 +37,7 @@ class QbtClient:
                 log.info("qBT login OK")
             return self._client
 
-    async def _request(self, method: str, path: str, **kw) -> httpx.Response:
+    async def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
         c = await self._ensure_client()
         r = await c.request(method, path, **kw)
         if r.status_code == 403:  # session expired

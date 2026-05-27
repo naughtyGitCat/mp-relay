@@ -37,7 +37,7 @@ class MpClient:
                 await self._login()
             return self._token  # type: ignore[return-value]
 
-    async def request(self, method: str, path: str, **kw) -> httpx.Response:
+    async def request(self, method: str, path: str, **kw: Any) -> httpx.Response:
         headers = kw.pop("headers", {})
         token = await self._ensure_token()
         headers["Authorization"] = f"Bearer {token}"

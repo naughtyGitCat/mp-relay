@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -41,7 +42,7 @@ def _format_ts(epoch: int | float) -> str:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from .config import validate as validate_settings
     issues = validate_settings()
     if issues:
@@ -95,7 +96,7 @@ app = FastAPI(title="mp-relay", lifespan=lifespan)
 # ============================================================
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def index(request: Request) -> HTMLResponse:
     tasks = store.list_recent(limit=50)
     # Pre-format timestamps Python-side; avoids Jinja2 env-filter cache quirks.
     for t in tasks:
@@ -108,7 +109,7 @@ async def index(request: Request):
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, Any]:
     from . import bangumi as bgm
     mdcx_err = await mdcx_healthcheck()
     tg_err = await notify.healthcheck()
@@ -135,7 +136,7 @@ async def metrics() -> Response:
 # ============================================================
 
 @app.get("/setup", response_class=HTMLResponse)
-async def setup_page(request: Request):
+async def setup_page(request: Request) -> HTMLResponse:
     """Render the setup page. The page itself queries the JSON endpoints
     below for live status — keeps the template simple."""
     return templates.TemplateResponse(
@@ -144,7 +145,7 @@ async def setup_page(request: Request):
 
 
 @app.get("/api/setup/status")
-async def api_setup_status():
+async def api_setup_status() -> dict[str, Any]:
     """Combined status for the setup page: current mdcx detection +
     cached config snapshot for MoviePilot / qBT / Jellyfin / 115 (no
     live probe here — that happens on "Test connection" click via the
@@ -206,7 +207,7 @@ def _or_current(value: str, current: str) -> str:
 @app.post("/api/setup/moviepilot/test")
 async def api_setup_moviepilot_test(
     url: str = Form(""), user: str = Form(""), password: str = Form(""),
-):
+) -> dict[str, Any]:
     """Probe MoviePilot creds without saving. UI calls this on "Test
     connection" so the user can validate before they commit. Any blank
     field is filled in from the running ``settings`` so the user can
@@ -221,7 +222,7 @@ async def api_setup_moviepilot_test(
 @app.post("/api/setup/moviepilot/save")
 async def api_setup_moviepilot_save(
     url: str = Form(""), user: str = Form(""), password: str = Form(""),
-):
+) -> dict[str, Any]:
     """Test-then-persist. We always test before save so we never write a
     config known-broken. 422-on-fail prompts the UI to surface the error
     inline rather than silently saving bad data."""
@@ -241,7 +242,7 @@ async def api_setup_moviepilot_save(
 @app.post("/api/setup/qbt/test")
 async def api_setup_qbt_test(
     url: str = Form(""), user: str = Form(""), password: str = Form(""),
-):
+) -> dict[str, Any]:
     return await setup_wizard.probe_qbt(
         _or_current(url, settings.qbt_url),
         _or_current(user, settings.qbt_user),
@@ -252,7 +253,7 @@ async def api_setup_qbt_test(
 @app.post("/api/setup/qbt/save")
 async def api_setup_qbt_save(
     url: str = Form(""), user: str = Form(""), password: str = Form(""),
-):
+) -> dict[str, Any]:
     final_url  = _or_current(url, settings.qbt_url)
     final_user = _or_current(user, settings.qbt_user)
     final_pass = _or_current(password, settings.qbt_pass)
@@ -267,7 +268,7 @@ async def api_setup_qbt_save(
 
 
 @app.post("/api/setup/jellyfin/test")
-async def api_setup_jellyfin_test(url: str = Form(""), api_key: str = Form("")):
+async def api_setup_jellyfin_test(url: str = Form(""), api_key: str = Form("")) -> dict[str, Any]:
     return await setup_wizard.probe_jellyfin(
         _or_current(url, settings.jellyfin_url),
         _or_current(api_key, settings.jellyfin_api_key),
@@ -275,7 +276,7 @@ async def api_setup_jellyfin_test(url: str = Form(""), api_key: str = Form("")):
 
 
 @app.post("/api/setup/jellyfin/save")
-async def api_setup_jellyfin_save(url: str = Form(""), api_key: str = Form("")):
+async def api_setup_jellyfin_save(url: str = Form(""), api_key: str = Form("")) -> dict[str, Any]:
     final_url = _or_current(url, settings.jellyfin_url)
     final_key = _or_current(api_key, settings.jellyfin_api_key)
     probe = await setup_wizard.probe_jellyfin(final_url, final_key)
@@ -290,7 +291,7 @@ async def api_setup_jellyfin_save(url: str = Form(""), api_key: str = Form("")):
 @app.post("/api/setup/telegram/test")
 async def api_setup_telegram_test(
     bot_token: str = Form(""), chat_id: str = Form(""), event_filter: str = Form(""),
-):
+) -> dict[str, Any]:
     """Probe Telegram bot creds. event_filter not validated (free-text CSV)."""
     return await setup_wizard.probe_telegram(
         _or_current(bot_token, settings.telegram_bot_token),
@@ -301,7 +302,7 @@ async def api_setup_telegram_test(
 @app.post("/api/setup/telegram/save")
 async def api_setup_telegram_save(
     bot_token: str = Form(""), chat_id: str = Form(""), event_filter: str = Form(""),
-):
+) -> dict[str, Any]:
     """Test-then-persist Telegram creds + event filter.
 
     ``event_filter`` is accepted verbatim (incl. empty = send all events) —
@@ -330,7 +331,7 @@ async def api_setup_telegram_save(
 
 
 @app.post("/api/setup/configure")
-async def api_setup_configure(mdcx_dir: str = Form(...)):
+async def api_setup_configure(mdcx_dir: str = Form(...)) -> dict[str, Any]:
     """Path B: user has mdcx already installed; they tell us where.
 
     We probe the dir for a working CLI module, write the resolved
@@ -355,7 +356,7 @@ async def api_setup_configure(mdcx_dir: str = Form(...)):
 
 
 @app.post("/api/setup/failed-output-dir")
-async def api_setup_failed_output_dir(failed_output_dir: str = Form("")):
+async def api_setup_failed_output_dir(failed_output_dir: str = Form("")) -> dict[str, Any]:
     """Save the ``failed_output_dir`` setting (where mp-relay moves
     staging dirs after a scrape/QC failure). Empty value = use the
     sibling-collector default (<staging-parent>/scrapefailed/<basename>/).
@@ -370,7 +371,7 @@ async def api_setup_failed_output_dir(failed_output_dir: str = Form("")):
 
 
 @app.post("/api/setup/mdcx-config-set")
-async def api_setup_mdcx_config_set(key: str = Form(...), value: str = Form("")):
+async def api_setup_mdcx_config_set(key: str = Form(...), value: str = Form("")) -> dict[str, Any]:
     """Mutate a single mdcx config field via mdcx's own CLI. Restricted
     to the whitelist mp-relay surfaces (``MDCX_EDITABLE_FIELDS``) — any
     other key is rejected before we even invoke mdcx. mdcx itself also
@@ -393,7 +394,7 @@ async def api_setup_mdcx_config_set(key: str = Form(...), value: str = Form(""))
 
 
 @app.post("/api/setup/mdcx-takeover-failed")
-async def api_setup_mdcx_takeover_failed():
+async def api_setup_mdcx_takeover_failed() -> dict[str, Any]:
     """Tell mdcx to STOP moving files on failure (sets mdcx config's
     ``failed_output_folder`` to empty string via ``mdcx config set``).
 
@@ -417,7 +418,7 @@ async def api_setup_mdcx_takeover_failed():
 
 
 @app.post("/api/setup/install")
-async def api_setup_install(script: str = Form("setup-mdcx")):
+async def api_setup_install(script: str = Form("setup-mdcx")) -> dict[str, Any]:
     """Path A: trigger one of the bundled setup PS1 scripts (currently
     ``setup-mdcx`` or ``setup-moviepilot``) in the background. Returns
     immediately; poll /api/setup/install/log for progress.
@@ -431,7 +432,7 @@ async def api_setup_install(script: str = Form("setup-mdcx")):
 
 
 @app.get("/api/setup/install/log")
-async def api_setup_install_log(since: int = 0):
+async def api_setup_install_log(since: int = 0) -> dict[str, Any]:
     """Tail the install log. ``since`` is the cursor returned by the
     previous call's ``next_since``."""
     return setup_wizard.install_status(since=since)
@@ -442,7 +443,7 @@ async def api_setup_install_log(since: int = 0):
 # ============================================================
 
 @app.post("/check")
-async def check(text: str = Form(...)):
+async def check(text: str = Form(...)) -> JSONResponse:
     """Look up whether the input already exists locally — without submitting anything."""
     text = text.strip()
     if not text:
@@ -462,7 +463,7 @@ async def submit(
     request: Request,
     text: str = Form(...),
     force: bool = Form(False),
-):
+) -> JSONResponse:
     """Submit input. If existence detected and force=False, return 409 with details.
 
     UI is expected to call /submit; if it gets 409, show the user a confirmation
@@ -515,7 +516,7 @@ async def submit(
     return _attach_existence(handler_resp, existence)
 
 
-async def _dispatch(text: str, kind: str, hints: dict):
+async def _dispatch(text: str, kind: str, hints: dict) -> JSONResponse:
     if kind in ("jav_magnet", "jav_torrent"):
         return await _handle_jav(text, kind, hints)
     if kind in ("magnet", "torrent"):
@@ -718,7 +719,7 @@ async def subscribe(
     tmdbid: int = Form(...),
     type_: str = Form(..., alias="type"),
     season: int | None = Form(None),
-):
+) -> JSONResponse:
     mp = MpClient()
     resp = await mp.subscribe(name=name, tmdbid=tmdbid, type_=type_, season=season)
     tid = store.add(
@@ -732,7 +733,7 @@ async def subscribe(
 
 
 @app.get("/tasks")
-async def tasks_api(limit: int = 50):
+async def tasks_api(limit: int = 50) -> list[dict[str, Any]]:
     return store.list_recent(limit=limit)
 
 
@@ -741,7 +742,7 @@ async def tasks_api(limit: int = 50):
 # ============================================================
 
 @app.get("/discover", response_class=HTMLResponse)
-async def discover_page(request: Request, name: str = "", actor_id: str = ""):
+async def discover_page(request: Request, name: str = "", actor_id: str = "") -> HTMLResponse:
     """演员发现页面.
 
     /discover                     → 仅显示搜索框
@@ -760,7 +761,7 @@ async def discover_page(request: Request, name: str = "", actor_id: str = ""):
 
 
 @app.get("/api/jav-search")
-async def api_jav_search(code: str, refresh: bool = False, limit: int = 20):
+async def api_jav_search(code: str, refresh: bool = False, limit: int = 20) -> dict[str, Any]:
     """Phase 1 — list magnet candidates for a 番号 (no submission)."""
     if not code:
         raise HTTPException(400, "code required")
@@ -769,7 +770,7 @@ async def api_jav_search(code: str, refresh: bool = False, limit: int = 20):
 
 
 @app.get("/api/jav-keyword-search")
-async def api_jav_keyword_search(q: str, limit: int = 20):
+async def api_jav_keyword_search(q: str, limit: int = 20) -> dict[str, Any]:
     """Free-text magnet search via sukebei — no code-strict filter.
 
     Use case: user got a Bangumi match for a Chinese fan-translation, the JP
@@ -785,7 +786,7 @@ async def api_jav_keyword_search(q: str, limit: int = 20):
 
 
 @app.post("/api/jav-add")
-async def api_jav_add(magnet: str = Form(...), code: str = Form("")):
+async def api_jav_add(magnet: str = Form(...), code: str = Form("")) -> dict[str, Any]:
     """Add a single magnet to qBT JAV category. Used by /submit jav_code flow + Phase 2 batch."""
     if not magnet.startswith("magnet:"):
         raise HTTPException(400, "magnet must start with 'magnet:'")
@@ -810,7 +811,7 @@ async def api_jav_add(magnet: str = Form(...), code: str = Form("")):
 
 
 @app.post("/api/bulk-subscribe")
-async def api_bulk_subscribe(codes_csv: str = Form(...)):
+async def api_bulk_subscribe(codes_csv: str = Form(...)) -> dict[str, Any]:
     """Phase 2 batch path: take a comma-separated list of codes, search each on
     sukebei (using cache), pick the best candidate, add to qBT.
 
@@ -862,8 +863,8 @@ async def api_bulk_subscribe(codes_csv: str = Form(...)):
     return {"total": len(codes), "ok": ok_count, "failed": len(codes) - ok_count, "results": results}
 
 
-@app.post("/api/bulk-115")
-async def api_bulk_115(codes_csv: str = Form(...)):
+@app.post("/api/bulk-115", response_model=None)
+async def api_bulk_115(codes_csv: str = Form(...)) -> JSONResponse | dict[str, Any]:
     """Phase 2 batch path — 115 cloud-offline variant of ``/api/bulk-subscribe``.
 
     Same auto-pick logic (best_candidate by suspicion/中字/seeders/quality/size),
@@ -947,7 +948,7 @@ async def api_bulk_115(codes_csv: str = Form(...)):
 
 @app.get("/api/discover/films")
 async def api_discover_films(kind: str = "", id: str = "", url: str = "",
-                              refresh: bool = False):
+                              refresh: bool = False) -> JSONResponse:
     """Phase 2c — list films for a series / studio / genre / director / actor.
 
     Caller supplies either:
@@ -981,7 +982,7 @@ async def api_discover_films(kind: str = "", id: str = "", url: str = "",
 
 @app.get("/api/discover/actor")
 async def api_discover_actor(name: str = "", actor_id: str = "",
-                              refresh: bool = False):
+                              refresh: bool = False) -> JSONResponse:
     """JSON API for the discover page.
 
     Either provide `name` to search, or `actor_id` to fetch films.
@@ -1007,7 +1008,7 @@ async def api_discover_actor(name: str = "", actor_id: str = "",
 
 
 @app.get("/tasks/{task_id}")
-async def task_detail(task_id: str):
+async def task_detail(task_id: str) -> dict[str, Any]:
     t = store.get(task_id)
     if not t:
         raise HTTPException(404, "task not found")
@@ -1019,7 +1020,7 @@ async def task_detail(task_id: str):
 # ============================================================
 
 @app.get("/api/gfriends")
-async def api_gfriends(name: str = ""):
+async def api_gfriends(name: str = "") -> dict[str, Any]:
     """Look up an actor's portrait URL on gfriends/gfriends.
 
     Returns ``{name, url}`` on hit, ``{name, url: null}`` on miss. Used by
@@ -1036,7 +1037,7 @@ async def api_gfriends(name: str = ""):
 # ============================================================
 
 @app.get("/api/img-proxy")
-async def api_img_proxy(url: str):
+async def api_img_proxy(url: str) -> Response:
     """Fetch an image from a whitelisted hotlink-protected host with the
     correct Referer, stream it back to the browser. Workaround for JavBus
     Cloudflare 403-without-Referer + browser inability to set Referer.
@@ -1065,7 +1066,7 @@ async def api_cover_refill(
     root: str = Form(...),
     dry_run: bool = Form(True),
     limit: Optional[int] = Form(None),
-):
+) -> dict[str, Any]:
     """Refill missing cover images in a Jellyfin library by reading each
     folder's NFO and pulling the cover from JavDB's CDN.
 
@@ -1086,7 +1087,7 @@ async def api_cover_refill(
 # ============================================================
 
 @app.get("/auth/115", response_class=HTMLResponse)
-async def auth_115_page(request: Request):
+async def auth_115_page(request: Request) -> HTMLResponse:
     """One-time QR-scan authorization page. After this, mp-relay can push
     magnets to 115's offline-download queue without ever asking again
     (refresh tokens auto-rotate).
@@ -1100,7 +1101,7 @@ async def auth_115_page(request: Request):
 
 
 @app.post("/api/cloud115/start")
-async def api_cloud115_start():
+async def api_cloud115_start() -> dict[str, Any]:
     """Begin device-code flow. Returns the QR-scan handle for the auth page."""
     try:
         return await cloud115.start_auth()
@@ -1110,7 +1111,7 @@ async def api_cloud115_start():
 
 
 @app.get("/api/cloud115/poll")
-async def api_cloud115_poll(uid: str, time: str, sign: str):
+async def api_cloud115_poll(uid: str, time: str, sign: str) -> dict[str, Any]:
     """Poll the QR scan status. When status flips to 2, server-side
     auto-exchanges the device code for tokens and returns authorized=true."""
     try:
@@ -1121,15 +1122,15 @@ async def api_cloud115_poll(uid: str, time: str, sign: str):
 
 
 @app.post("/api/cloud115/clear")
-async def api_cloud115_clear():
+async def api_cloud115_clear() -> dict[str, Any]:
     """Forget current authorization (use this if tokens go stale and need
     fresh QR scan). Idempotent."""
     cloud115.clear_tokens()
     return {"cleared": True}
 
 
-@app.post("/api/cloud115-add")
-async def api_cloud115_add(magnet: str = Form(...), code: str = Form("")):
+@app.post("/api/cloud115-add", response_model=None)
+async def api_cloud115_add(magnet: str = Form(...), code: str = Form("")) -> JSONResponse | dict[str, Any]:
     """Push a magnet to 115's offline queue. Records a task so it shows up in
     the live tasks table.
     """
@@ -1196,7 +1197,7 @@ async def api_cloud115_add(magnet: str = Form(...), code: str = Form("")):
 
 
 @app.get("/api/cloud115/list")
-async def api_cloud115_list(page: int = 1):
+async def api_cloud115_list(page: int = 1) -> dict[str, Any]:
     """Pass-through to 115's offline list — useful for a 'check progress on
     115' button if/when we add one."""
     if not cloud115.is_authorized():
@@ -1205,7 +1206,7 @@ async def api_cloud115_list(page: int = 1):
 
 
 @app.post("/api/cloud115/retry-failed-scrapes")
-async def api_cloud115_retry_failed_scrapes():
+async def api_cloud115_retry_failed_scrapes() -> dict[str, Any]:
     """Re-run the mdcx step for tasks stuck in ``scrape_no_match`` or
     ``scrape_failed_items``.
 
@@ -1243,7 +1244,7 @@ async def api_cloud115_retry_failed_scrapes():
 
 
 @app.post("/api/cloud115/retry-failed-syncs")
-async def api_cloud115_retry_failed_syncs():
+async def api_cloud115_retry_failed_syncs() -> dict[str, Any]:
     """Re-queue tasks stuck in ``cloud_sync_failed`` so the watcher picks
     them up on its next tick.
 
