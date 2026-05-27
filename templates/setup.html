@@ -238,6 +238,32 @@
 </div>
 
 <!-- ============================================================
+     Telegram — optional notifications channel
+     ============================================================ -->
+<div class="card" id="card-tg">
+  <h3>Telegram 通知 <span class="badge" id="tg-badge">可选</span></h3>
+  <p class="desc">可选。终端流水线事件（QC 失败 / 刮削失败 / 入库等）推送到 Telegram bot。BotFather → /newbot 拿 token；chat_id 用 @userinfobot 查。</p>
+
+  <div class="field">
+    <label for="tg-token">TELEGRAM_BOT_TOKEN</label>
+    <input type="password" id="tg-token" placeholder="(unchanged if blank)" autocomplete="new-password">
+  </div>
+  <div class="field">
+    <label for="tg-chat">TELEGRAM_CHAT_ID</label>
+    <input type="text" id="tg-chat" placeholder="123456789 或 -100xxxxxx (group)" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="tg-filter">TELEGRAM_EVENT_FILTER</label>
+    <input type="text" id="tg-filter" placeholder="留空 = 所有事件; 或 CSV 如 qc_failed_exhausted,scrape_failed" autocomplete="off">
+  </div>
+  <div class="actions">
+    <button id="tg-test" class="secondary">Test connection</button>
+    <button id="tg-save">Save</button>
+  </div>
+  <div class="feedback" id="tg-feedback"></div>
+</div>
+
+<!-- ============================================================
      115 cloud-drive — opt-in. Card only renders auth UI; tokens are
      a separate concern from the URL/credential cards above.
      ============================================================ -->
@@ -474,6 +500,16 @@ bindCard({
   saveUrl: '/api/setup/jellyfin/save',
   badgeId: 'jf-badge',
   feedbackId: 'jf-feedback',
+});
+
+// Telegram
+bindCard({
+  name: 'tg',
+  fieldIds: { bot_token: 'tg-token', chat_id: 'tg-chat', event_filter: 'tg-filter' },
+  testUrl: '/api/setup/telegram/test',
+  saveUrl: '/api/setup/telegram/save',
+  badgeId: 'tg-badge',
+  feedbackId: 'tg-feedback',
 });
 
 // -------- mdcx-config-set — render whitelist + per-field save --------

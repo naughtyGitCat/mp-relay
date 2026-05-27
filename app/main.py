@@ -287,6 +287,48 @@ async def api_setup_jellyfin_save(url: str = Form(""), api_key: str = Form("")):
     return {"ok": True, "applied": {"JELLYFIN_URL": final_url, "JELLYFIN_API_KEY": "***"}}
 
 
+@app.post("/api/setup/telegram/test")
+async def api_setup_telegram_test(
+    bot_token: str = Form(""), chat_id: str = Form(""), event_filter: str = Form(""),
+):
+    """Probe Telegram bot creds. event_filter not validated (free-text CSV)."""
+    return await setup_wizard.probe_telegram(
+        _or_current(bot_token, settings.telegram_bot_token),
+        _or_current(chat_id, settings.telegram_chat_id),
+    )
+
+
+@app.post("/api/setup/telegram/save")
+async def api_setup_telegram_save(
+    bot_token: str = Form(""), chat_id: str = Form(""), event_filter: str = Form(""),
+):
+    """Test-then-persist Telegram creds + event filter.
+
+    ``event_filter`` is accepted verbatim (incl. empty = send all events) —
+    no probe, since it's a free-text CSV of event names known only to
+    ``notify.py``'s caller. Bot token + chat_id are persisted only after
+    token validates via getMe.
+    """
+    final_token  = _or_current(bot_token, settings.telegram_bot_token)
+    final_chat   = _or_current(chat_id, settings.telegram_chat_id)
+    final_filter = event_filter.strip()  # empty allowed (= send all)
+    probe = await setup_wizard.probe_telegram(final_token, final_chat)
+    if not probe["ok"]:
+        raise HTTPException(422, probe["error"])
+    updates = {
+        "TELEGRAM_BOT_TOKEN":    final_token,
+        "TELEGRAM_CHAT_ID":      final_chat,
+        "TELEGRAM_EVENT_FILTER": final_filter,
+    }
+    setup_wizard.write_env_keys(updates)
+    setup_wizard.apply_settings_in_place(updates)
+    return {"ok": True, "applied": {
+        "TELEGRAM_BOT_TOKEN":    "***",
+        "TELEGRAM_CHAT_ID":      final_chat,
+        "TELEGRAM_EVENT_FILTER": final_filter or "(empty = all events)",
+    }}
+
+
 @app.post("/api/setup/configure")
 async def api_setup_configure(mdcx_dir: str = Form(...)):
     """Path B: user has mdcx already installed; they tell us where.

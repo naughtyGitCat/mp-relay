@@ -463,6 +463,44 @@ async def probe_jellyfin(url: str, api_key: str) -> dict:
     return {"ok": False, "error": f"unexpected HTTP {r.status_code}: {r.text[:200]}"}
 
 
+async def probe_telegram(bot_token: str, chat_id: str) -> dict:
+    """Validate a Telegram bot token via ``GET /bot{token}/getMe``.
+
+    Returns ``{ok, error, bot_username, bot_name}`` on success. We can't
+    cheaply validate ``chat_id`` (the only way is to send a real message,
+    which is intrusive — even ``getChat`` requires the bot to have been
+    explicitly added to the chat first), so it's accepted as-is and
+    verified at first real notification. Token validity is the only
+    pre-save check.
+    """
+    if not bot_token:
+        return {"ok": False, "error": "Bot token is required (BotFather → /newbot)"}
+    url = f"https://api.telegram.org/bot{bot_token}/getMe"
+    try:
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_SEC) as c:
+            r = await c.get(url)
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"HTTP error: {e}"}
+    if r.status_code == 401:
+        return {"ok": False, "error": "bot token rejected (401) — token wrong or revoked"}
+    if r.status_code == 404:
+        return {"ok": False, "error": "bot not found (404) — token wrong"}
+    if r.status_code != 200:
+        return {"ok": False, "error": f"unexpected HTTP {r.status_code}: {r.text[:200]}"}
+    try:
+        data = r.json()
+    except Exception as e:
+        return {"ok": False, "error": f"200 but body wasn't JSON: {e}"}
+    if not data.get("ok"):
+        return {"ok": False, "error": f"getMe returned ok=false: {data}"}
+    info = data.get("result", {}) or {}
+    return {
+        "ok": True, "error": None,
+        "bot_username": info.get("username"),
+        "bot_name": info.get("first_name"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Background install
 # ---------------------------------------------------------------------------
