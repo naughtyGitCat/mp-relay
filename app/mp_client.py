@@ -56,12 +56,22 @@ class MpClient:
     # ---- high-level ops ----
     async def add_download(self, *, title: str, enclosure: str,
                            tmdbid: Optional[int] = None,
+                           doubanid: Optional[str] = None,
                            save_path: Optional[str] = None) -> dict[str, Any]:
+        """Submit a torrent to MoviePilot's downloader.
+
+        When ``tmdbid`` (or ``doubanid``) is provided, MP skips its own
+        title-based media identification and binds the download directly
+        to that media — useful for externally-sourced magnets where MP's
+        auto-recognition fails (``success=false, "无法识别媒体信息"``).
+        """
         body: dict[str, Any] = {
             "torrent_in": {"title": title, "enclosure": enclosure},
         }
         if tmdbid is not None:
             body["tmdbid"] = tmdbid
+        if doubanid:
+            body["doubanid"] = doubanid
         if save_path:
             body["save_path"] = save_path
         r = await self.request("POST", "/api/v1/download/add", json=body)

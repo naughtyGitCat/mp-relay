@@ -463,19 +463,31 @@ async def submit(
     request: Request,
     text: str = Form(...),
     force: bool = Form(False),
+    tmdbid: int | None = Form(None),
+    doubanid: str | None = Form(None),
+    media_type: str | None = Form(None),
 ) -> JSONResponse:
     """Submit input. If existence detected and force=False, return 409 with details.
 
     UI is expected to call /submit; if it gets 409, show the user a confirmation
     UI and re-POST with force=true.
+
+    Optional ``tmdbid`` / ``doubanid`` / ``media_type`` let callers pre-bind a
+    magnet (or .torrent) to a known media identity, bypassing MoviePilot's own
+    title-based recognition. Only the magnet/torrent dispatch path consumes
+    them — other kinds (jav, media_name, id_ref) silently ignore. Useful when
+    feeding externally-sourced magnets whose ``&dn=`` doesn't match TMDB and
+    MP's ``add_download`` would otherwise return ``success=false, "无法识别媒
+    体信息"``. ``media_type`` ("电影" / "电视剧") is recorded for traceability
+    but not pushed to MP (MP's add_download infers the type from tmdbid).
     """
     text = text.strip()
     if not text:
         raise HTTPException(400, "empty input")
 
     kind, hints = classify(text)
-    log.info("submit kind=%s hints=%s force=%s text=%s",
-             kind, hints, force, text[:80])
+    log.info("submit kind=%s hints=%s force=%s tmdbid=%s doubanid=%s media_type=%s text=%s",
+             kind, hints, force, tmdbid, doubanid, media_type, text[:80])
 
     # Existence pre-check — always run, used for warning (and for blocking magnets).
     existence = await check_existence(text, kind, hints)
@@ -506,7 +518,10 @@ async def submit(
 
     # Normal dispatch — handler returns its own JSONResponse / dict.
     try:
-        handler_resp = await _dispatch(text, kind, hints)
+        handler_resp = await _dispatch(
+            text, kind, hints,
+            tmdbid=tmdbid, doubanid=doubanid, media_type=media_type,
+        )
     except Exception:
         m.SUBMIT_TOTAL.labels(kind=kind, result="error").inc()
         raise
@@ -516,11 +531,27 @@ async def submit(
     return _attach_existence(handler_resp, existence)
 
 
-async def _dispatch(text: str, kind: str, hints: dict) -> JSONResponse:
+async def _dispatch(
+    text: str, kind: str, hints: dict,
+    *,
+    tmdbid: int | None = None,
+    doubanid: str | None = None,
+    media_type: str | None = None,
+) -> JSONResponse:
+    """Route submission to the kind-specific handler.
+
+    The ``tmdbid`` / ``doubanid`` / ``media_type`` overrides only matter for
+    the ``magnet`` / ``torrent`` kinds (downloads routed through MoviePilot).
+    JAV / id_ref / media_name / jav_code follow different code paths that
+    don't benefit from a pre-bound media identity, so they ignore the kwargs.
+    """
     if kind in ("jav_magnet", "jav_torrent"):
         return await _handle_jav(text, kind, hints)
     if kind in ("magnet", "torrent"):
-        return await _handle_regular_magnet(text, kind, hints)
+        return await _handle_regular_magnet(
+            text, kind, hints,
+            tmdbid=tmdbid, doubanid=doubanid, media_type=media_type,
+        )
     if kind == "id_ref":
         return await _handle_id_ref(text, hints)
     if kind == "media_name":
@@ -597,11 +628,36 @@ async def _handle_jav(text: str, kind: str, hints: dict) -> JSONResponse:
     })
 
 
-async def _handle_regular_magnet(text: str, kind: str, hints: dict) -> JSONResponse:
-    """Hand off to MoviePilot — it'll identify TMDB and route through normal flow."""
+async def _handle_regular_magnet(
+    text: str, kind: str, hints: dict,
+    *,
+    tmdbid: int | None = None,
+    doubanid: str | None = None,
+    media_type: str | None = None,
+) -> JSONResponse:
+    """Hand off to MoviePilot — it'll identify TMDB and route through normal flow.
+
+    Optional ``tmdbid`` / ``doubanid`` are forwarded to MP's ``/api/v1/
+    download/add`` to short-circuit MP's title-based recognition (which fails
+    on externally-sourced magnets whose ``&dn=`` doesn't match TMDB).
+    ``media_type`` is recorded for traceability but not forwarded — MP infers
+    the type from tmdbid.
+    """
     mp = MpClient()
     name = hints.get("name") or "magnet-unknown"
-    resp = await mp.add_download(title=name, enclosure=text)
+    resp = await mp.add_download(
+        title=name, enclosure=text,
+        tmdbid=tmdbid, doubanid=doubanid,
+    )
+    # Record overrides on the task for diagnosability — important when the
+    # caller explicitly forced a media identity and we need to audit why.
+    if tmdbid is not None or doubanid or media_type:
+        resp = dict(resp)
+        resp["_overrides"] = {
+            "tmdbid": tmdbid,
+            "doubanid": doubanid,
+            "media_type": media_type,
+        }
     tid = store.add(
         kind=kind,
         input_text=text,
