@@ -604,7 +604,7 @@ async def start_install(script: str = "setup-mdcx") -> dict:
             process=proc,
         )
 
-        async def _watch():
+        async def _watch() -> None:
             try:
                 if proc.stdout is not None:
                     await _stream_to_buffer(proc.stdout, _install)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
@@ -628,6 +628,21 @@ async def _handle_jav(text: str, kind: str, hints: dict) -> JSONResponse:
     })
 
 
+# Strong references to in-flight detached tasks. asyncio.create_task() alone
+# returns a task the event loop only weakly references — under GC pressure it
+# can be collected before finishing, silently dropping the work. Holding the
+# task in a module-level set (cleared via done-callback) is the documented
+# fix. See https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+_bg_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _spawn_bg(coro: Coroutine[Any, Any, Any], *, name: str) -> None:
+    """Fire-and-forget a coroutine with a GC-safe strong reference."""
+    task = asyncio.create_task(coro, name=name)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
 async def _handle_regular_magnet(
     text: str, kind: str, hints: dict,
     *,
@@ -635,41 +650,87 @@ async def _handle_regular_magnet(
     doubanid: str | None = None,
     media_type: str | None = None,
 ) -> JSONResponse:
-    """Hand off to MoviePilot — it'll identify TMDB and route through normal flow.
+    """Record the task immediately, then push to MoviePilot in a detached task.
 
-    Optional ``tmdbid`` / ``doubanid`` are forwarded to MP's ``/api/v1/
-    download/add`` to short-circuit MP's title-based recognition (which fails
-    on externally-sourced magnets whose ``&dn=`` doesn't match TMDB).
-    ``media_type`` is recorded for traceability but not forwarded — MP infers
-    the type from tmdbid.
+    Why background: MP's ``/api/v1/download/add`` runs media recognition
+    inline and can take tens of seconds. If we awaited it inside the request
+    coroutine, a client that gives up (curl ``--max-time``, browser ``fetch``
+    abort) triggers a server-side cancellation that can kill the coroutine
+    AFTER MP already queued the torrent in qBT but BEFORE we recorded the
+    task — orphaning it (torrent in qBT, no mp-relay task). This is the
+    2026-06 Warehouse 13 incident. Recording the task first and doing the MP
+    call in a task detached from the request lifecycle guarantees the task
+    always reaches a terminal state (submitted_to_mp / mp_rejected),
+    regardless of what the client does.
+
+    Optional ``tmdbid`` / ``doubanid`` are forwarded to MP to short-circuit
+    its title-based recognition (which fails on externally-sourced magnets
+    whose ``&dn=`` doesn't match TMDB). ``media_type`` is recorded for
+    traceability but not forwarded — MP infers the type from tmdbid.
+
+    Returns immediately with ``state="submitting_to_mp"``; the UI live-polls
+    /tasks for the eventual transition.
     """
-    mp = MpClient()
     name = hints.get("name") or "magnet-unknown"
-    resp = await mp.add_download(
-        title=name, enclosure=text,
-        tmdbid=tmdbid, doubanid=doubanid,
-    )
-    # Record overrides on the task for diagnosability — important when the
-    # caller explicitly forced a media identity and we need to audit why.
+    overrides: dict[str, Any] | None = None
     if tmdbid is not None or doubanid or media_type:
-        resp = dict(resp)
-        resp["_overrides"] = {
-            "tmdbid": tmdbid,
-            "doubanid": doubanid,
-            "media_type": media_type,
-        }
+        overrides = {"tmdbid": tmdbid, "doubanid": doubanid, "media_type": media_type}
+
+    # Record BEFORE the MP call so a client disconnect can never orphan it.
+    # Stamp _overrides at creation so the audit trail survives even if the
+    # background task dies (e.g. service restart) before it completes.
+    add_fields: dict[str, Any] = {"title": name[:200]}
+    if overrides is not None:
+        add_fields["mp_response"] = {"_overrides": overrides}
     tid = store.add(
         kind=kind,
         input_text=text,
-        state="submitted_to_mp" if resp.get("success") else "mp_rejected",
-        title=name[:200],
-        mp_response=resp,
+        state="submitting_to_mp",
+        **add_fields,
     )
+
+    _spawn_bg(
+        _submit_magnet_to_mp(
+            tid, name=name, enclosure=text,
+            tmdbid=tmdbid, doubanid=doubanid, overrides=overrides,
+        ),
+        name=f"mp-add-{tid[:8]}",
+    )
+
     return JSONResponse({
         "task_id": tid,
         "kind": kind,
-        "mp_response": resp,
+        "state": "submitting_to_mp",
     })
+
+
+async def _submit_magnet_to_mp(
+    tid: str, *, name: str, enclosure: str,
+    tmdbid: int | None, doubanid: str | None,
+    overrides: dict[str, Any] | None,
+) -> None:
+    """Background worker: push a magnet to MoviePilot and update the task with
+    the result. Detached from the request lifecycle so a client disconnect
+    can't cancel it mid-flight (see ``_handle_regular_magnet`` docstring)."""
+    mp = MpClient()
+    try:
+        resp = await mp.add_download(
+            title=name, enclosure=enclosure,
+            tmdbid=tmdbid, doubanid=doubanid,
+        )
+    except Exception as e:
+        log.exception("mp add_download failed for task %s: %s", tid, e)
+        store.update(tid, state="mp_rejected", error=str(e)[:300])
+        return
+    # Preserve the override audit trail on the final mp_response too.
+    if overrides is not None:
+        resp = dict(resp)
+        resp["_overrides"] = overrides
+    store.update(
+        tid,
+        state="submitted_to_mp" if resp.get("success") else "mp_rejected",
+        mp_response=resp,
+    )
 
 
 async def _handle_media_name(text: str, hints: dict) -> JSONResponse:
