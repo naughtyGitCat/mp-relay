@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     javbus_base: str = "https://www.javbus.com"
     javdb_base: str = "https://javdb.com"
     missav_base: str = "https://missav.com"
+    avsox_base: str = "https://avsox.click"      # uncensored cover fallback for cover-refill
     discover_cache_ttl_sec: int = 24 * 3600     # 24h default
     discover_max_pages: int = 10                  # max paginated pages per actor
     discover_proxy: str = ""                      # override default httpx proxy if needed
