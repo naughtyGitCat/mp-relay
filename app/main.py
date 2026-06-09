@@ -1183,20 +1183,26 @@ async def api_cover_refill(
     root: str = Form(...),
     dry_run: bool = Form(True),
     limit: Optional[int] = Form(None),
+    proxy: Optional[str] = Form(None),
 ) -> dict[str, Any]:
     """Refill missing cover images in a Jellyfin library by reading each
-    folder's NFO and pulling the cover from JavDB's CDN.
+    folder's NFO and pulling the cover from JavBus / AVSOX / JavDB.
 
     Body params (form):
       - ``root``     — library root, e.g. ``E:/Jav``. Required.
       - ``dry_run``  — default True; reports what *would* be written.
       - ``limit``    — cap candidates (useful for first-time spot-check).
+      - ``proxy``    — override ``settings.discover_proxy`` for this run
+                       (e.g. ``http://user:pass@10.0.0.2:7890``). The cover
+                       sites are GFW-blocked, so a working proxy is required.
 
     Returns summary + per-folder result. See ``cover_refill.refill_root``.
     """
     if not root or not Path(root).is_dir():
         raise HTTPException(400, f"root must be an existing directory: {root!r}")
-    return await cover_refill.refill_root(root, dry_run=dry_run, limit=limit)
+    return await cover_refill.refill_root(
+        root, dry_run=dry_run, limit=limit, proxy=proxy or None,
+    )
 
 
 # ============================================================
