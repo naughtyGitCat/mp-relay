@@ -232,7 +232,10 @@ def test_move_to_failed_holding_default_pattern(tmp_path, monkeypatch):
 
     moved = post_download._move_to_failed_holding(str(staging), kind="scrape")
     assert moved is not None
-    assert not staging.exists()                                      # original gone
+    # Clone semantics (changed from move in 2026-05): source is PRESERVED so
+    # qBT can keep seeding from it.
+    assert staging.exists()
+    assert (staging / "video.mp4").is_file()
     assert (tmp_path / "staging" / "scrapefailed" / "SNOS-073").is_dir()
     assert (tmp_path / "staging" / "scrapefailed" / "SNOS-073" / "video.mp4").is_file()
 
