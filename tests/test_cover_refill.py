@@ -175,15 +175,20 @@ class _FakeClient:
         return _FakeResp(404)
 
 
+# A valid-looking image: ≥2000 bytes + JPEG magic, so cover_refill's
+# _looks_like_image() accepts it (it rejects tiny bodies + HTML 200s).
+_FAKE_JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 2200
+
+
 def test_refill_one_javdbid_writes_covers(tmp_path: Path):
     from app import cover_refill
     folder = _setup_folder(tmp_path)
-    fake = _FakeClient({"/covers/1a/1ABZQ4.jpg": _FakeResp(200, b"\xff\xd8FAKEJPG")})
+    fake = _FakeClient({"/covers/1a/1ABZQ4.jpg": _FakeResp(200, _FAKE_JPG)})
     res = asyncio.run(cover_refill.refill_one(fake, folder, dry_run=False))
     assert res.status == "refilled"
     assert res.javdbid == "1ABZQ4"
     assert res.code == "APAA-443"
-    assert (folder / "APAA-443-poster.jpg").read_bytes() == b"\xff\xd8FAKEJPG"
+    assert (folder / "APAA-443-poster.jpg").read_bytes() == _FAKE_JPG
     assert (folder / "folder.jpg").exists()
 
 
@@ -220,7 +225,7 @@ def test_refill_one_falls_back_to_search_by_num(tmp_path: Path):
     search_html = '<a href="/v/1ABZQ4" class="box">APAA-443 ...</a>'
     fake = _FakeClient({
         "/search?": _FakeResp(200, search_html.encode("utf-8")),
-        "/covers/1a/1ABZQ4.jpg": _FakeResp(200, b"\xff\xd8JPG"),
+        "/covers/1a/1ABZQ4.jpg": _FakeResp(200, _FAKE_JPG),
     })
     res = asyncio.run(cover_refill.refill_one(fake, folder, dry_run=False))
     assert res.status == "refilled"
@@ -237,24 +242,55 @@ def test_refill_one_search_no_match(tmp_path: Path):
 
 
 def test_refill_one_cover_fetch_404(tmp_path: Path):
-    """JavDB occasionally has a stale id that 404s on the CDN. Should error,
-    not crash."""
+    """No source yields a cover (JavBus/AVSOX miss, JavDB CDN 404s on a stale
+    id) → skip_no_id, not a crash."""
     from app import cover_refill
     folder = _setup_folder(tmp_path)
     fake = _FakeClient({"/covers/": _FakeResp(404)})
     res = asyncio.run(cover_refill.refill_one(fake, folder, dry_run=False))
-    assert res.status == "error"
+    assert res.status == "skip_no_id"
 
 
 def test_refill_one_dry_run_writes_nothing(tmp_path: Path):
     from app import cover_refill
     folder = _setup_folder(tmp_path)
-    fake = _FakeClient({"/covers/1a/1ABZQ4.jpg": _FakeResp(200, b"\xff\xd8JPG")})
+    fake = _FakeClient({"/covers/1a/1ABZQ4.jpg": _FakeResp(200, _FAKE_JPG)})
     res = asyncio.run(cover_refill.refill_one(fake, folder, dry_run=True))
     assert res.status == "dry_run"
     assert len(res.files_written) == 4
     for name in res.files_written:
         assert not (folder / name).exists()
+
+
+def test_refill_one_javbus_path(tmp_path: Path):
+    """No <javdbid>, just a 番号 → JavBus detail page → a.bigImage cover."""
+    from app import cover_refill
+    folder = _setup_folder(tmp_path, nfo_content="<movie><num>CAWD-368</num></movie>")
+    detail = '<a class="bigImage" href="/pics/cover/8w76_b.jpg"><img src="/pics/cover/8w76_b.jpg"></a>'
+    fake = _FakeClient({
+        "javbus.com/CAWD-368": _FakeResp(200, detail.encode("utf-8")),
+        "/pics/cover/8w76_b.jpg": _FakeResp(200, _FAKE_JPG),
+    })
+    res = asyncio.run(cover_refill.refill_one(fake, folder, dry_run=False))
+    assert res.status == "refilled"
+    assert res.source == "javbus"
+    assert (folder / "CAWD-368-poster.jpg").read_bytes() == _FAKE_JPG
+
+
+def test_refill_one_avsox_fallback(tmp_path: Path):
+    """JavBus misses → AVSOX search → first movie-box → detail → bigImage."""
+    from app import cover_refill
+    folder = _setup_folder(tmp_path, nfo_content="<movie><num>KV-233</num></movie>")
+    search = '<a class="movie-box" href="https://avsox.click/cn/movie/abc123">x</a>'
+    detail = '<a class="bigImage" href="https://jp.netcdn.space/cover.jpg"><img></a>'
+    fake = _FakeClient({
+        "avsox.click/cn/search/KV-233": _FakeResp(200, search.encode("utf-8")),
+        "avsox.click/cn/movie/abc123": _FakeResp(200, detail.encode("utf-8")),
+        "jp.netcdn.space/cover.jpg": _FakeResp(200, _FAKE_JPG),
+    })
+    res = asyncio.run(cover_refill.refill_one(fake, folder, dry_run=False))
+    assert res.status == "refilled"
+    assert res.source == "avsox"
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +311,7 @@ def test_refill_root_summarizes(tmp_path: Path, monkeypatch):
     f3 = studio / "A-3"; f3.mkdir()
     (f3 / "x.nfo").write_text("<movie><title>x</title></movie>")
 
-    fake = _FakeClient({"/covers/1a/1ABZQ4.jpg": _FakeResp(200, b"\xff\xd8")})
+    fake = _FakeClient({"/covers/1a/1ABZQ4.jpg": _FakeResp(200, _FAKE_JPG)})
 
     class _CtxFakeClient:
         async def __aenter__(self): return fake
