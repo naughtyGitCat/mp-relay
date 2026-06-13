@@ -27,9 +27,13 @@ Strategy (multi-site, 2026-06-04):
      3. **JavDB CDN** — if the NFO has ``<javdbid>`` (or we can resolve one via
         JavDB search), fetch ``c0.jdbstatic.com/covers/<prefix>/<id>.jpg``.
         JavDB is Cloudflare-protected so this is last and often unavailable.
-   Save the fetched cover under all the names Jellyfin recognizes:
-   ``<code>-poster.jpg``, ``<code>-fanart.jpg``, ``<code>-thumb.jpg``,
-   ``folder.jpg``.
+   Save the fetched cover under all the names Jellyfin recognizes. The
+   **poster** + **folder** images are cropped to a portrait front-cover (a
+   standard JAV cover is a wide ``[ back | front ]`` image, so the right
+   portion is the poster) for a clean poster grid; **fanart** + **thumb** keep
+   the full wide image for the backdrop. VR / odd-ratio / already-portrait
+   covers are written full-frame to all four. A folder whose only image is a
+   corrupt placeholder is treated as image-less and re-filled.
 
 Network:
    All of these sites are GFW-blocked / require an egress proxy. The httpx
@@ -44,6 +48,7 @@ Concurrency:
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import re
 from dataclasses import dataclass, field
@@ -53,6 +58,12 @@ from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup
+
+try:
+    from PIL import Image
+    _PIL_OK = True
+except ImportError:  # pragma: no cover - Pillow is a declared dependency
+    _PIL_OK = False
 
 from .config import settings
 
@@ -88,6 +99,21 @@ _JAVDB_REFERER: str = "https://javdb.com/"
 _IMG_EXTS: frozenset[str] = frozenset({
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif",
 })
+
+# Poster cropping. Standard JAV "pl" covers are a wide ``[ back | front ]``
+# image (~1.49 ratio); the front cover is the right portion. Cropping from this
+# fraction of the width yields a ~2:3 portrait poster that fills Jellyfin's
+# poster grid properly instead of a squished landscape. Verified against
+# DMM/JavBus covers. Covers that are already portrait, or VR / montage covers
+# (no single front cover), are left full-frame.
+_POSTER_CROP_LEFT: float = 0.5375
+_CROP_MIN_RATIO: float = 1.20   # below this it's already portrait — don't crop
+_CROP_MAX_RATIO: float = 1.58   # at/above this it's VR/montage/odd — don't crop
+
+# Below this size a file can't be a real cover — it's a 0-byte stub, a
+# truncated download, or an HTML error page saved as ``.jpg``. Treated as "no
+# image" so the folder gets (re)filled instead of skipped on junk.
+_MIN_IMAGE_BYTES: int = 2000
 
 # Magic-byte prefixes for the image formats these sites serve. Used to reject
 # HTML error pages / Cloudflare challenges that come back with a 200 but aren't
@@ -152,11 +178,34 @@ def _extract_ids(nfo: str) -> tuple[str, str]:
     return jid, num
 
 
-def _has_image(folder: Path) -> bool:
-    """True if the folder already contains ANY image file. Used as the
-    early-skip gate so we don't redownload existing covers."""
+def _is_valid_image(p: Path) -> bool:
+    """True if ``p`` is a real, decodable image. Tiny stubs, truncated files,
+    and HTML/error pages saved with an image extension return False so the
+    folder isn't skipped on a junk placeholder."""
     try:
-        return any(p.suffix.lower() in _IMG_EXTS for p in folder.iterdir() if p.is_file())
+        if p.stat().st_size < _MIN_IMAGE_BYTES:
+            return False
+    except OSError:
+        return False
+    if not _PIL_OK:
+        return True  # can't decode without Pillow; trust extension + size
+    try:
+        with Image.open(p) as im:
+            return im.width > 0 and im.height > 0
+    except Exception:
+        return False
+
+
+def _has_image(folder: Path) -> bool:
+    """True if the folder already contains a VALID image. Used as the early-skip
+    gate so we don't redownload existing covers — but a corrupt/placeholder
+    image doesn't count, so those folders get healed on the next run."""
+    try:
+        return any(
+            _is_valid_image(p)
+            for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() in _IMG_EXTS
+        )
     except OSError:
         return False
 
@@ -352,16 +401,48 @@ def _safe_code(folder_name: str, num: str) -> str:
     return re.sub(r"[^\w\-]", "_", first) or "cover"
 
 
-def _write_covers(folder: Path, code: str, body: bytes, *, dry_run: bool) -> list[str]:
-    """Write the same image bytes under all four Jellyfin-recognized names."""
-    names = [
-        f"{code}-poster.jpg",
-        f"{code}-fanart.jpg",
-        f"{code}-thumb.jpg",
-        "folder.jpg",
+def _make_poster(body: bytes, raw_code: str = "") -> bytes:
+    """Return portrait poster bytes cropped from a wide JAV cover, or ``body``
+    unchanged when cropping doesn't apply (no Pillow, already portrait, a
+    VR/montage cover, or any decode error). The crop takes the front-cover
+    (right) portion of a standard ``[ back | front ]`` cover."""
+    if not _PIL_OK or "VR" in (raw_code or "").upper():
+        return body
+    try:
+        with Image.open(io.BytesIO(body)) as im:
+            w, h = im.size
+            if not h:
+                return body
+            ratio = w / h
+            if ratio < _CROP_MIN_RATIO or ratio >= _CROP_MAX_RATIO:
+                return body
+            left = int(w * _POSTER_CROP_LEFT)
+            cropped = im.crop((left, 0, w, h)).convert("RGB")
+        buf = io.BytesIO()
+        cropped.save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+    except Exception as e:
+        log.warning("poster crop failed (%s); using full cover", e)
+        return body
+
+
+def _write_covers(folder: Path, code: str, body: bytes, *, dry_run: bool,
+                  raw_code: str = "") -> list[str]:
+    """Write cover images under the Jellyfin-recognized names. ``poster`` and
+    ``folder`` get a portrait crop of the front cover (for a clean poster grid);
+    ``fanart`` and ``thumb`` keep the full wide image (for the backdrop). VR /
+    odd / already-portrait covers are written full-frame to all four."""
+    poster = body if dry_run else _make_poster(body, raw_code)
+    # Order preserved for a stable ``written`` list; poster + folder share the
+    # cropped bytes, fanart + thumb keep the wide bytes.
+    name_bytes: list[tuple[str, bytes]] = [
+        (f"{code}-poster.jpg", poster),
+        (f"{code}-fanart.jpg", body),
+        (f"{code}-thumb.jpg", body),
+        ("folder.jpg", poster),
     ]
     written: list[str] = []
-    for name in names:
+    for name, data in name_bytes:
         target = folder / name
         if target.exists():
             continue
@@ -369,7 +450,7 @@ def _write_covers(folder: Path, code: str, body: bytes, *, dry_run: bool) -> lis
             written.append(name)
             continue
         try:
-            target.write_bytes(body)
+            target.write_bytes(data)
             written.append(name)
         except OSError as e:
             log.warning("can't write %s: %s", target, e)
@@ -446,7 +527,7 @@ async def refill_one(client: httpx.AsyncClient, folder: Path, *, dry_run: bool) 
         res.reason = f"no cover on javbus/avsox/javdb for {raw_code or javdbid!r}"
         return res
 
-    res.files_written = _write_covers(folder, res.code, body, dry_run=dry_run)
+    res.files_written = _write_covers(folder, res.code, body, dry_run=dry_run, raw_code=raw_code)
     res.status = "dry_run" if dry_run else "refilled"
     return res
 

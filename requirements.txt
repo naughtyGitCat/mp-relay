@@ -9,3 +9,4 @@ lxml>=5.0
 beautifulsoup4>=4.12
 prometheus-client>=0.21
 p115client>=0.0.8
+pillow>=10.0
