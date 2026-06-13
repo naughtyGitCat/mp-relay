@@ -1,0 +1,50 @@
+name: 💡 Feature request
+description: Suggest an idea or improvement for mp-relay
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        mp-relay is built for one person's homelab, so features are weighed against
+        "does this help the single-input → dispatch → scrape flow?" Context helps.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that's hard or impossible today?
+      placeholder: "When I paste an actor URL, I'd like to also filter by ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like mp-relay to do?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area?
+      options:
+        - Input / classifier
+        - Dispatch (MoviePilot / qBT / 115)
+        - Post-download / mdcx / cover-refill
+        - Actor discovery (/discover)
+        - Setup wizard / config
+        - Metrics / notifications
+        - Packaging / deployment
+        - Other
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, existing tools, or workarounds you've tried.
+    validations:
+      required: false
