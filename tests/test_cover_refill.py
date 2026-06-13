@@ -8,11 +8,35 @@ not the live network.
 from __future__ import annotations
 
 import asyncio
+import io as _io
+import os as _os
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+# Real, decodable JPEG fixtures (noise-filled so they clear the module's
+# _MIN_IMAGE_BYTES floor). Used where we need _has_image / _make_poster to act
+# on a genuine image rather than the header-only _FAKE_JPG below.
+try:
+    from PIL import Image as _PILImage
+
+    def _jpg(w: int, h: int) -> bytes:
+        buf = _io.BytesIO()
+        _PILImage.frombytes("RGB", (w, h), _os.urandom(w * h * 3)).save(buf, "JPEG", quality=85)
+        return buf.getvalue()
+
+    _REAL_SQUARE_JPG = _jpg(320, 320)   # ratio 1.0 → _make_poster leaves it alone
+    _REAL_WIDE_JPG = _jpg(800, 538)     # standard wide cover → cropped to portrait
+    _PIL_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _REAL_SQUARE_JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 4000
+    _REAL_WIDE_JPG = _REAL_SQUARE_JPG
+    _PIL_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +95,7 @@ def test_has_image_detects_jpg(tmp_path: Path):
     from app.cover_refill import _has_image
     (tmp_path / "x.mp4").write_bytes(b"x")
     assert not _has_image(tmp_path)
-    (tmp_path / "poster.jpg").write_bytes(b"jpg")
+    (tmp_path / "poster.jpg").write_bytes(_REAL_SQUARE_JPG)
     assert _has_image(tmp_path)
 
 
@@ -140,6 +164,56 @@ def test_write_covers_dry_run_writes_nothing(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Poster cropping + corrupt-image detection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _PIL_AVAILABLE, reason="needs Pillow")
+def test_make_poster_crops_standard_wide():
+    from app.cover_refill import _make_poster
+    out = _make_poster(_REAL_WIDE_JPG, "ABP-123")
+    assert out != _REAL_WIDE_JPG                       # re-encoded, not the original
+    w, h = _PILImage.open(_io.BytesIO(out)).size
+    assert h == 538 and w < 800                        # right portion only
+    assert 0.6 < w / h < 0.75                          # ~2:3 portrait
+
+
+@pytest.mark.skipif(not _PIL_AVAILABLE, reason="needs Pillow")
+def test_make_poster_leaves_square_and_vr_untouched():
+    from app.cover_refill import _make_poster
+    assert _make_poster(_REAL_SQUARE_JPG) == _REAL_SQUARE_JPG          # already portrait-ish
+    assert _make_poster(_REAL_WIDE_JPG, "SIVR-123") == _REAL_WIDE_JPG  # VR → keep full frame
+
+
+def test_make_poster_passes_through_undecodable():
+    # The header-only _FAKE_JPG can't be opened → returned unchanged, never raises.
+    from app.cover_refill import _make_poster
+    assert _make_poster(_FAKE_JPG, "ABP-123") == _FAKE_JPG
+
+
+@pytest.mark.skipif(not _PIL_AVAILABLE, reason="needs Pillow")
+def test_has_image_rejects_corrupt(tmp_path: Path):
+    from app.cover_refill import _has_image
+    folder = tmp_path / "x"
+    folder.mkdir()
+    (folder / "stub.jpg").write_bytes(b"\xff\xd8")                 # 2-byte placeholder
+    (folder / "junk.jpg").write_bytes(b"<html>not an image</html>" * 200)  # big but junk
+    assert _has_image(folder) is False
+    (folder / "real.jpg").write_bytes(_REAL_SQUARE_JPG)
+    assert _has_image(folder) is True
+
+
+def test_write_covers_splits_poster_and_fanart(tmp_path: Path):
+    # poster + folder get the (cropped) front cover; fanart + thumb keep the wide image.
+    from app.cover_refill import _write_covers, _make_poster
+    _write_covers(tmp_path, "ABP-123", _REAL_WIDE_JPG, dry_run=False, raw_code="ABP-123")
+    expected_poster = _make_poster(_REAL_WIDE_JPG, "ABP-123")
+    assert (tmp_path / "ABP-123-poster.jpg").read_bytes() == expected_poster
+    assert (tmp_path / "folder.jpg").read_bytes() == expected_poster
+    assert (tmp_path / "ABP-123-fanart.jpg").read_bytes() == _REAL_WIDE_JPG
+    assert (tmp_path / "ABP-123-thumb.jpg").read_bytes() == _REAL_WIDE_JPG
+
+
+# ---------------------------------------------------------------------------
 # refill_one — end-to-end flow with mocked httpx
 # ---------------------------------------------------------------------------
 
@@ -151,7 +225,7 @@ def _setup_folder(tmp_path: Path, *, nfo_content: str | None = "<movie><javdbid>
     if nfo_content is not None:
         (folder / "APAA-443.nfo").write_text(nfo_content, encoding="utf-8")
     if with_image:
-        (folder / "existing.jpg").write_bytes(b"\xff\xd8")
+        (folder / "existing.jpg").write_bytes(_REAL_SQUARE_JPG)
     return folder
 
 
@@ -307,7 +381,7 @@ def test_refill_root_summarizes(tmp_path: Path, monkeypatch):
     (f1 / "x.nfo").write_text("<movie><javdbid>1ABZQ4</javdbid><num>A-1</num></movie>")
     f2 = studio / "A-2"; f2.mkdir()
     (f2 / "x.nfo").write_text("<movie><javdbid>1ABZQ4</javdbid></movie>")
-    (f2 / "x.jpg").write_bytes(b"\xff")
+    (f2 / "x.jpg").write_bytes(_REAL_SQUARE_JPG)
     f3 = studio / "A-3"; f3.mkdir()
     (f3 / "x.nfo").write_text("<movie><title>x</title></movie>")
 
