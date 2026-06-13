@@ -1,0 +1,92 @@
+name: 🐛 Bug report
+description: Something in mp-relay isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report. mp-relay is a personal-use
+        homelab tool, so please include enough detail to reproduce — a vague
+        report on a single-user tool is hard to action.
+
+  - type: input
+    id: version
+    attributes:
+      label: mp-relay version
+      description: From the installer filename (`mp-relay-Setup-YYYY.MM.DD.<n>.exe`) or the `build-<n>` release / commit you're running.
+      placeholder: "build-19 / 2026.06.11.19"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part?
+      description: Where does the problem happen?
+      options:
+        - Input / classifier (/, /submit)
+        - MoviePilot dispatch (regular media)
+        - qBT JAV pipeline
+        - 115 offline download
+        - Post-download (QC / merge / sanitize)
+        - mdcx scrape
+        - Cover refill
+        - Actor discovery (/discover)
+        - Setup wizard (/setup)
+        - Watcher / 115 sync
+        - Metrics / Telegram notifications
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: |
+        What did you do and what went wrong? Include the input you submitted
+        (magnet / media name / JAV code / actor). Redact anything you don't want
+        public.
+      placeholder: |
+        1. Pasted a JAV code `ABC-123` on `/`
+        2. Task went to `submitted_to_115` then `cloud_failed`
+        3. Expected it to sync + scrape
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / health
+      description: |
+        Relevant lines from the service log (`service-stdout.log` / `service-stderr.log`)
+        and/or the `/health` JSON. This will be rendered as code, no need for backticks.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Windows version, and the MoviePilot / qBittorrent / mdcx versions involved.
+      placeholder: "Win11 24H2 · MoviePilot 2.x · qBittorrent 4.6 · mdcx fork"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and this isn't a duplicate
+          required: true
+        - label: My `:5000` is on a trusted LAN and not exposed to the internet
+          required: false

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions & ideas (Discussions)
+    url: https://github.com/naughtyGitCat/mp-relay/discussions
+    about: Usage questions, setup help, and open-ended ideas — use Discussions, not Issues.
+  - name: 📖 Setup & deployment docs
+    url: https://github.com/naughtyGitCat/mp-relay/blob/main/deploy/README.md
+    about: Read the deploy guide before filing a setup issue.
