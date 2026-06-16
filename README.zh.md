@@ -55,7 +55,7 @@ flowchart TD
 
 | 路径 | 用途 |
 |---|---|
-| **`/`** | 单输入框主页 + 最近任务列表（10s 自动刷新） |
+| **`/`** | 单输入框主页 + 最近任务列表（10s 自动刷新）+ 可折叠的**补封面面板**，批量回填缺失的 JAV 封面 |
 | **`/discover`** | 演员发现页 —— 搜演员名 → 列出该演员所有番号（可隐藏已拥有）→ 多选批量"加入 qBT"或"加入 115" |
 | **`/setup`** | 配置向导 —— 4 张卡（mdcx / MoviePilot / qBittorrent / Jellyfin），每张 Test connection + Save，热加载不重启 |
 | **`/health`** | JSON 健康检查 —— mdcx / Telegram / Bangumi / 115 各服务状态 |
@@ -105,6 +105,7 @@ flowchart TD
 - **`/metrics` Prometheus** + Grafana 仪表盘（`deploy/grafana/`）：任务数 / 各 stage 时长 / mdcx 成功率
 - **Telegram 通知**：关键事件（`qc_failed_exhausted` / `scrape_failed` / `scraped`）推私聊
 - **115 token 自动续**：refresh token 持久化，watcher 检测到 `state=false` 静默续杯，无需人工重授权
+- **补封面面板**（`/` 上可折叠，背后是 `POST /api/cover-refill`）：填库根目录（默认 `M:/Jav`），**预览**（dry-run，不写盘）或直接跑，把所有缺封面的文件夹从 JavBus / AVSOX / JavDB 抓官方封面、裁竖版、写标准的 `poster / fanart / thumb / folder` 名。补的是大批量导入后的封面缺口，跟自动的逐片兜底（上面第 5 步）互补；`limit` 可分批跑
 
 ## 配置
 
