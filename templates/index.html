@@ -63,10 +63,28 @@
     button:disabled { opacity: 0.5; cursor: wait; }
     .hint { color: var(--muted); font-size: 12px; flex: 1; text-align: right; }
 
-    #result { margin-top: 16px; padding: 12px; border-radius: 8px; display: none; }
-    #result.ok { background: rgba(63, 185, 80, 0.1); border: 1px solid var(--ok); display: block; }
-    #result.err { background: rgba(248, 81, 73, 0.1); border: 1px solid var(--error); display: block; }
-    #result pre { margin: 8px 0 0; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+    #result, #cr-result { margin-top: 16px; padding: 12px; border-radius: 8px; display: none; }
+    #result.ok, #cr-result.ok { background: rgba(63, 185, 80, 0.1); border: 1px solid var(--ok); display: block; }
+    #result.err, #cr-result.err { background: rgba(248, 81, 73, 0.1); border: 1px solid var(--error); display: block; }
+    #result pre, #cr-result pre { margin: 8px 0 0; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+
+    /* Cover-refill panel */
+    #cover-refill-card { padding: 0; }
+    #cover-refill-card > summary { padding: 16px; font-weight: 600; font-size: 15px; cursor: pointer; list-style: none; }
+    #cover-refill-card > summary::-webkit-details-marker { display: none; }
+    #cover-refill-card > summary::before { content: "▸ "; color: var(--muted); }
+    #cover-refill-card[open] > summary::before { content: "▾ "; }
+    #cover-refill-card .cr-body { padding: 0 16px 16px; }
+    .cr-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 8px; }
+    .cr-row label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+    .cr-row input[type=text], .cr-row input[type=number] {
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 8px; font: 13px monospace;
+    }
+    .cr-row input#cr-root { width: 200px; }
+    .cr-row input#cr-limit { width: 90px; }
+    #cr-result details { margin-top: 6px; }
+    #cr-result summary { cursor: pointer; }
 
     .candidates { margin-top: 12px; }
     .candidate {
@@ -157,6 +175,22 @@
     <div id="result"></div>
     <div id="candidates" class="candidates"></div>
   </div>
+
+  <details class="input-card" id="cover-refill-card">
+    <summary>🖼 补封面 (cover-refill)</summary>
+    <div class="cr-body">
+      <div class="cr-row">
+        <label>库根目录 <input type="text" id="cr-root" value="{{ settings.jav_library or 'M:/Jav' }}" spellcheck="false"></label>
+        <label>limit <input type="number" id="cr-limit" min="1" placeholder="不限"></label>
+        <label><input type="checkbox" id="cr-dryrun" checked> 预览 (dry-run，不写盘)</label>
+      </div>
+      <div class="controls">
+        <button type="button" id="cr-btn">开始</button>
+        <span class="hint">扫描缺封面的文件夹 → 从 javbus / avsox / javdb 抓官方封面、裁竖版、写标准名。<br>整库实际执行可能几十分钟，建议先勾「预览」，或用 limit 分批跑。</span>
+      </div>
+      <div id="cr-result"></div>
+    </div>
+  </details>
 
   <h2><span class="live-dot" title="自动刷新中"></span>最近任务 <span id="task-pulse" style="color:var(--muted);font-size:12px;font-weight:normal"></span></h2>
   <table>
@@ -522,6 +556,103 @@ async function doSubscribe(d) {
 
 function escape(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ============================================================
+// Cover-refill — fill missing JAV covers from javbus/avsox/javdb.
+// dry_run (checkbox, default on) previews without touching disk;
+// unchecking it actually fetches + crops + writes standard names.
+// ============================================================
+const crBtn = document.getElementById('cr-btn');
+const crResult = document.getElementById('cr-result');
+
+function basename(p) { return String(p).split(/[\\/]/).filter(Boolean).pop() || p; }
+
+crBtn.addEventListener('click', async () => {
+  const root = document.getElementById('cr-root').value.trim();
+  const dryRun = document.getElementById('cr-dryrun').checked;
+  const limit = document.getElementById('cr-limit').value.trim();
+  if (!root) {
+    crResult.className = 'err';
+    crResult.style.display = 'block';
+    crResult.innerHTML = '<strong>请先填库根目录</strong>（如 <code>M:/Jav</code>）';
+    return;
+  }
+  crBtn.disabled = true;
+  crResult.className = '';
+  crResult.style.display = 'block';
+  crResult.innerHTML = dryRun
+    ? '🔍 预览中 — 扫描缺封面的文件夹…'
+    : '⏳ 补封面执行中 — 抓取 + 裁剪写盘，整库可能几十分钟，别关页面…';
+
+  const fd = new FormData();
+  fd.set('root', root);
+  fd.set('dry_run', dryRun ? 'true' : 'false');
+  if (limit) fd.set('limit', limit);
+
+  try {
+    const r = await fetch('/api/cover-refill', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok) {
+      crResult.className = 'err';
+      crResult.innerHTML = '<strong>失败</strong><pre>' + JSON.stringify(j, null, 2) + '</pre>';
+      return;
+    }
+    renderCoverRefill(j, dryRun);
+  } catch (err) {
+    crResult.className = 'err';
+    crResult.innerHTML = '<strong>请求失败</strong><pre>' + err + '</pre>';
+  } finally {
+    crBtn.disabled = false;
+  }
+});
+
+function renderCoverRefill(j, wasDryRun) {
+  crResult.className = 'ok';
+  const by = j.by_source || {};
+  const results = j.results || [];
+  const refilled = results.filter(r => r.status === 'refilled' || r.status === 'dry_run');
+  const skipped  = results.filter(r => r.status && r.status.indexOf('skip') === 0);
+  const errored  = results.filter(r => r.status === 'error');
+  const bySrc = Object.entries(by).map(([k, v]) => escape(k) + ' ' + v).join(' + ');
+
+  let html = '<strong>' + (wasDryRun ? '🔍 预览结果（未写盘）' : '✅ 补封面完成') + '</strong>';
+  html += '<div style="margin-top:6px; font-size:13px; line-height:1.7">';
+  html += '根目录 <code>' + escape(j.root) + '</code> · 扫描 ' + j.scanned_folders + ' 个 · 缺图候选 ' + j.missing_image_candidates + ' 个';
+  if (j.proxy_used === false) html += ' · <span style="color:var(--error)">⚠ 未走代理（封面站被墙，可能全失败）</span>';
+  html += '<br>' + (wasDryRun ? '可补 ' : '已补 ') + '<strong style="color:var(--ok)">' + refilled.length + '</strong>';
+  if (bySrc) html += ' (' + bySrc + ')';
+  html += ' · 补不到 <strong style="color:var(--error)">' + skipped.length + '</strong>';
+  if (errored.length) html += ' · 错误 <strong style="color:var(--error)">' + errored.length + '</strong>';
+  html += '</div>';
+
+  if (skipped.length) {
+    html += '<details><summary style="color:var(--muted)">补不到的 ' + skipped.length + ' 个（素人/孤本，站点查无）</summary>';
+    html += '<ul style="margin:6px 0; padding-left:18px; font-size:12px">';
+    html += skipped.slice(0, 200).map(r =>
+      '<li><code>' + escape(r.code || '?') + '</code> ' + escape(basename(r.folder)) +
+      ' <span style="color:var(--muted)">' + escape(r.reason || '') + '</span></li>').join('');
+    if (skipped.length > 200) html += '<li>… 还有 ' + (skipped.length - 200) + ' 个</li>';
+    html += '</ul></details>';
+  }
+  if (refilled.length) {
+    html += '<details><summary style="color:var(--ok)">' + (wasDryRun ? '将补' : '已补') + '的 ' + refilled.length + ' 个</summary>';
+    html += '<ul style="margin:6px 0; padding-left:18px; font-size:12px">';
+    html += refilled.slice(0, 300).map(r =>
+      '<li><code>' + escape(r.code || '?') + '</code> <span style="color:var(--muted)">' +
+      escape(r.source || '') + '</span> ' + escape(basename(r.folder)) + '</li>').join('');
+    if (refilled.length > 300) html += '<li>… 还有 ' + (refilled.length - 300) + ' 个</li>';
+    html += '</ul></details>';
+  }
+  if (errored.length) {
+    html += '<details><summary style="color:var(--error)">错误 ' + errored.length + ' 个</summary>';
+    html += '<ul style="margin:6px 0; padding-left:18px; font-size:12px">';
+    html += errored.slice(0, 100).map(r =>
+      '<li>' + escape(basename(r.folder || '')) + ' <span style="color:var(--muted)">' +
+      escape(r.reason || '') + '</span></li>').join('');
+    html += '</ul></details>';
+  }
+  crResult.innerHTML = html;
 }
 
 // ============================================================

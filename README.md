@@ -56,7 +56,7 @@ flowchart TD
 
 | Path | Purpose |
 |---|---|
-| **`/`** | Single-input home + recent-task list (auto-refresh every 10s) |
+| **`/`** | Single-input home + recent-task list (auto-refresh every 10s) + a collapsible **cover-refill panel** for bulk-backfilling missing JAV covers |
 | **`/discover`** | Actor discovery — search an actor's name → list all of their codes (can hide ones you already own) → multi-select and bulk "add to qBT" or "add to 115" |
 | **`/setup`** | Config wizard — 4 cards (mdcx / MoviePilot / qBittorrent / Jellyfin), each with Test connection + Save, hot-reloaded without a restart |
 | **`/health`** | JSON health check — per-service status for mdcx / Telegram / Bangumi / 115 |
@@ -106,6 +106,7 @@ Failures land in one of two buckets (paths configurable in `/setup`, default sib
 - **`/metrics` Prometheus** + Grafana dashboard (`deploy/grafana/`): task counts / per-stage durations / mdcx success rate
 - **Telegram notifications**: key events (`qc_failed_exhausted` / `scrape_failed` / `scraped`) pushed to a DM
 - **115 token auto-renew**: refresh token is persisted; when the watcher detects `state=false` it silently tops it up — no manual re-authorization needed
+- **Cover-refill panel** (collapsible on `/`, backed by `POST /api/cover-refill`): point it at a library root (default `M:/Jav`), **preview** (dry-run, no writes) or run it to backfill every cover-less folder — pulls official art from JavBus / AVSOX / JavDB, crops to portrait, writes the standard `poster / fanart / thumb / folder` names. Complements the automated per-task fallback (step 5 above) for bulk gap-filling after a big import; `limit` lets you run it in batches
 
 ## Configuration
 
