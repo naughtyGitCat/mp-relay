@@ -18,6 +18,7 @@ cloud sync. The caller passes (target_dir, task_id, optional retry_handler).
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
@@ -27,7 +28,7 @@ import shutil
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from . import cleanup, merger, metrics as m, notify, qc, store
+from . import ad_fingerprint, cleanup, merger, metrics as m, notify, qc, store
 from .config import settings
 from .exists import extract_code
 from .mdcx_runner import scrape_dir
@@ -546,6 +547,36 @@ async def _scrape_and_postclean(target: str, tid: str, name: str) -> None:
 # Top-level entry point
 # ---------------------------------------------------------------------------
 
+_VIDEO_EXTS_AD = frozenset({".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".ts"})
+
+
+async def _run_ad_detect(target: str, tid: str) -> None:
+    """Step 5c — scan each video head for known ad clips and trim losslessly.
+
+    Never raises: any failure is logged and the pipeline continues untouched.
+    The CPU-bound pure-Python fingerprint runs in a worker thread.
+    """
+    try:
+        if not ad_fingerprint.list_ads():
+            return
+        base = Path(target)
+        vids = [x for x in base.rglob("*")
+                if x.is_file() and x.suffix.lower() in _VIDEO_EXTS_AD
+                and "Extras" not in x.parts]
+        for vid in vids:
+            res = await asyncio.to_thread(
+                ad_fingerprint.scan_and_cut, str(vid),
+                float(settings.ad_detect_head_sec), True, True)
+            if res.get("applied"):
+                log.info("[ad-detect] task=%s trimmed %.1fs from %s (%s)",
+                         tid, res["cut_from"], vid.name, "; ".join(res["reasons"]))
+            elif res.get("matches"):
+                log.info("[ad-detect] task=%s matched (not head-anchored) in %s: %s",
+                         tid, vid.name, res["matches"])
+    except Exception as e:  # noqa: BLE001 — never break the pipeline
+        log.warning("[ad-detect] task=%s skipped (%s)", tid, e)
+
+
 async def run_pipeline(
     target: str,
     tid: str,
@@ -592,6 +623,10 @@ async def run_pipeline(
     sanitize_notes = _sanitize_video_filenames(target)
     if sanitize_notes:
         log.info("[scrape] task=%s sanitized %d video filenames", tid, len(sanitize_notes))
+
+    # Step 5c — de-advertise: trim known spliced-in head ads (default off)
+    if settings.ad_detect_enabled:
+        await _run_ad_detect(target, tid)
 
     # Step 6
     if not await _qc_and_maybe_retry(target, tid, name, failed_hash, retry_handler):

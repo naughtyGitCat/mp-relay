@@ -1,5 +1,7 @@
 .env
 state.db
+ad_fingerprints.json
+ad_fingerprints.json.tmp
 state.db-journal
 state.db-wal
 state.db-shm
