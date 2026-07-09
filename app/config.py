@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     # single .mkv (compatible with Jellyfin/Emby/mdcx, no re-encode).
     remux_disc_archives: bool = True
 
+    # Pre-mdcx (Step 5c): scan the video head for known spliced-in ad
+    # clips (app/ad_fingerprint.py) and losslessly trim them. Default OFF
+    # — enable only after seeding the DB (python -m app.ad_fingerprint add).
+    ad_detect_enabled: bool = False
+    ad_detect_head_sec: int = 150
+
     # QC retry: on failed quality-check, swap to the next-best candidate up to
     # this many attempts before giving up.
     qc_max_retries: int = 3

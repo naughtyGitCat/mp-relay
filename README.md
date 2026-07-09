@@ -95,6 +95,7 @@ Organized into four tiers — input → dispatch → post-processing → ops (th
 3. **Sanitize**: strips `[4K]` / `@` / `()` and other characters that blind mdcx's globbing
 4. **mdcx scrape**: concurrency capped at 2 (an early 60-way concurrency storm got rate-limited to a standstill by JavBus, hard-capped ever since)
 5. **Cover refill**: when mdcx is blocked from covers by Cloudflare, falls back to the JavDB CDN using the `javdbid` in the NFO to backfill `poster / fanart / thumb / folder`
+6. **Ad-trim** *(opt-in, off by default)*: fingerprints the audio at the video's head and, if it matches a known spliced-in promo/ad clip, losslessly trims it (`ffmpeg -c copy`, keyframe-snapped; original kept as `.preadcut.bak`). See [Ad-fingerprint de-advertising](#-ad-fingerprint-de-advertising-opt-in) below.
 
 Failures land in one of two buckets (paths configurable in `/setup`, default sibling-collector):
 - `scrapefailed/` — mdcx didn't recognize it → re-run via `/api/cloud115/retry-failed-scrapes`
@@ -107,6 +108,33 @@ Failures land in one of two buckets (paths configurable in `/setup`, default sib
 - **Telegram notifications**: key events (`qc_failed_exhausted` / `scrape_failed` / `scraped`) pushed to a DM
 - **115 token auto-renew**: refresh token is persisted; when the watcher detects `state=false` it silently tops it up — no manual re-authorization needed
 - **Cover-refill panel** (collapsible on `/`, backed by `POST /api/cover-refill`): point it at a library root (default `M:/Jav`), **preview** (dry-run, no writes) or run it to backfill every cover-less folder — pulls official art from JavBus / AVSOX / JavDB, crops to portrait, writes the standard `poster / fanart / thumb / folder` names. Complements the automated per-task fallback (step 5 above) for bulk gap-filling after a big import; `limit` lets you run it in batches
+
+### 🧹 Ad-fingerprint de-advertising (opt-in)
+
+Pirate re-uploads often splice a short promo/ad clip onto the **head** of the real
+video, and reuse the same clip across many releases from the same source.
+`app/ad_fingerprint.py` fingerprints known ad clips with a **Haitsma-Kalker robust
+audio hash** (from an 8 kHz mono downmix, so it survives re-encoding / rescaling /
+re-watermarking) and, on a head match, trims the ad **losslessly** (`ffmpeg -c copy`,
+keyframe-snapped; original kept as `.preadcut.bak`). Pure-Python (no numpy) — ffmpeg
+is the only external dependency.
+
+> Removes **spliced-in segments** only. It cannot remove a burned-in corner watermark
+> (that's overlaid on every frame, not an extra segment — for those, re-source the file).
+
+Seed the fingerprint DB (`ad_fingerprints.json`, kept next to `state.db`) once per ad
+clip; matches are then caught automatically:
+
+```
+python -m app.ad_fingerprint add  <name> <ad-clip.mp4> [--dur SECONDS] [--note ...]
+python -m app.ad_fingerprint list
+python -m app.ad_fingerprint scan <video>            # report matches only
+python -m app.ad_fingerprint cut  <video> --apply    # trim (dry-run without --apply)
+```
+
+Enable the automatic pipeline step (runs just before QC) with `AD_DETECT_ENABLED=true`.
+The step runs in a worker thread and is wrapped so any failure is logged and never
+breaks the pipeline.
 
 ## Configuration
 
@@ -141,6 +169,10 @@ JELLYFIN_API_KEY=
 # Telegram notifications (optional)
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+
+# Ad-fingerprint de-advertising (opt-in; see README). Off by default.
+AD_DETECT_ENABLED=false
+AD_DETECT_HEAD_SEC=150
 ```
 
 > ⚠ **Personal-use tool.** Designed for my homelab; defaults assume a single-user
