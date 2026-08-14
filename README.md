@@ -100,6 +100,8 @@ Failures land in one of two buckets (paths configurable in `/setup`, default sib
 - `scrapefailed/` — mdcx didn't recognize it → re-run via `/api/cloud115/retry-failed-scrapes`
 - `qcfailed/` — QC failed → auto-swaps to the next candidate torrent (up to 3 times)
 
+MDCx diagnostics preserve the final nested JSON summary and the useful tail of stderr. This matters because its startup warnings (for example, the `pkg_resources` deprecation warning) are often longer than the real failure message. The task table now shows actionable reasons such as `不在官网番号前缀列表中` instead of only the warning. Before retrying a scrape failure, normalize site-decorated filenames such as `aaxv.xyz-CEAD357.mp4`, `JUR-170_CH-nyap2p.com.mp4`, or `SSNI198.mp4` to the canonical `CODE-123.mp4` form. Also check the destination library first: mdcx may already have moved the main video successfully while a bundled ad clip failed, leaving a stale `scrape_failed` task.
+
 ### ⚙️ Ops / monitoring
 - **`/setup` config wizard**: four cards (mdcx / MoviePilot / qBT / Jellyfin), Test connection + Save, hot-reloaded without a restart
 - **mdcx field passthrough**: 8 frequently-changed fields (`success_output_folder` / `proxy` / `timeout` / ...) bridged through the mdcx CLI, editable right on mp-relay's setup page
