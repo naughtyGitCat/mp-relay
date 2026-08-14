@@ -99,6 +99,8 @@ flowchart TD
 - `scrapefailed/` — mdcx 没认出来 → `/api/cloud115/retry-failed-scrapes` 重跑
 - `qcfailed/` — QC 没过 → 自动 swap 下一个候选种子（最多 3 次）
 
+mdcx 诊断会保留最终的嵌套 JSON 摘要和 stderr 中真正有用的末尾内容。它启动时的警告（例如 `pkg_resources` 弃用警告）往往比实际报错更长；现在任务表会显示 `不在官网番号前缀列表中` 等真实原因，而不是只显示警告。重试刮削前，应把 `aaxv.xyz-CEAD357.mp4`、`JUR-170_CH-nyap2p.com.mp4`、`SSNI198.mp4` 这类带站点前后缀的文件名规范成 `CODE-123.mp4`。同时先检查成品库：有时 mdcx 已把主视频成功移走，只因种子附带的广告短片失败，任务状态才残留为 `scrape_failed`。
+
 ### ⚙️ 运维 / 监控
 - **`/setup` 配置向导**：mdcx / MoviePilot / qBT / Jellyfin 四张卡，Test connection + Save，热加载无需重启
 - **mdcx 字段透出**：8 个常改字段（`success_output_folder` / `proxy` / `timeout` / ...）通过 mdcx CLI 桥接，直接在 mp-relay 的 setup 页面改

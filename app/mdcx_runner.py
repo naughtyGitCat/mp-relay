@@ -212,7 +212,9 @@ async def scrape_dir(path: str, *, json_output: bool = True, quiet: bool = True,
 
         if result["rc"] != 0:
             aggregate_rc = result["rc"]
-            last_stderr.append(f"{f.name}: rc={result['rc']} {result['stderr'][:200]}")
+            last_stderr.append(
+                f"{f.name}: rc={result['rc']} {_diagnostic_tail(result['stderr'])}"
+            )
 
         # Parse the JSON summary mdcx prints; if absent (e.g. fatal startup
         # error), synthesize a 1-failed-1-total entry so the file still
@@ -221,7 +223,10 @@ async def scrape_dir(path: str, *, json_output: bool = True, quiet: bool = True,
         if parsed is None:
             parsed = {
                 "total": 1, "success": 0, "failed": 1,
-                "failed_items": [{"path": str(f), "reason": result["stderr"][:200] or "no JSON output"}],
+                "failed_items": [{
+                    "path": str(f),
+                    "reason": _diagnostic_tail(result["stderr"]) or "no JSON output",
+                }],
             }
         summaries.append(parsed)
 
@@ -234,21 +239,37 @@ async def scrape_dir(path: str, *, json_output: bool = True, quiet: bool = True,
     }
 
 
+def _diagnostic_tail(text: str, limit: int = 500) -> str:
+    """Return the useful tail of a subprocess diagnostic.
+
+    MDCx often writes a long ``pkg_resources`` warning before the actual
+    failure. Keeping the beginning hid messages such as ``不在官网番号前缀列表中``.
+    """
+    return (text or "").strip()[-limit:]
+
+
 def _parse_mdcx_stdout(stdout: str) -> Optional[dict]:
-    """mdcx prints chatty preamble lines + a final JSON object. Find that
-    JSON object so callers always see a parseable summary."""
+    """Extract the final JSON object from MDCx's chatty stdout.
+
+    The summary contains nested objects in ``failed_items``. Using ``rfind('{')``
+    therefore started at the innermost item and produced invalid JSON. Try each
+    object boundary from the end and accept only an object that consumes the
+    remainder of stdout.
+    """
     if not stdout:
         return None
     import json as _json
-    # Walk backward looking for a balanced { ... } at end of output.
-    i = stdout.rfind("{")
-    j = stdout.rfind("}")
-    if i == -1 or j == -1 or j < i:
-        return None
-    try:
-        return _json.loads(stdout[i:j + 1])
-    except _json.JSONDecodeError:
-        return None
+
+    decoder = _json.JSONDecoder()
+    positions = [index for index, char in enumerate(stdout) if char == "{"]
+    for start in reversed(positions):
+        try:
+            value, end = decoder.raw_decode(stdout[start:])
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and not stdout[start + end:].strip():
+            return value
+    return None
 
 
 async def healthcheck() -> Optional[str]:
