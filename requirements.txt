@@ -8,5 +8,8 @@ python-multipart>=0.0.9
 lxml>=5.0
 beautifulsoup4>=4.12
 prometheus-client>=0.21
-p115client>=0.0.8
+# 0.0.8 is gone from PyPI; 0.0.9 renamed offline_*_open / dropped from_token.
+# app/cloud115.py speaks both APIs. Cap below 0.1 so a future rename can't
+# silently break CI the way 0.0.8 → 0.0.9 did.
+p115client>=0.0.8,<0.1
 pillow>=10.0

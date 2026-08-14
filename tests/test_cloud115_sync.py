@@ -39,7 +39,7 @@ def test_add_offline_url_uses_explicit_save_dir(monkeypatch):
         captured["payload"] = payload
         return {"state": True, "data": []}
 
-    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_add_urls_open", fake_add)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_add_urls_open", fake_add, raising=False)
     asyncio.run(cloud115.add_offline_url("magnet:?xt=urn:btih:abc", save_dir_id="explicit-cid"))
     assert captured["payload"]["wp_path_id"] == "explicit-cid"
 
@@ -56,7 +56,7 @@ def test_add_offline_url_falls_back_to_settings(monkeypatch):
         captured["payload"] = payload
         return {"state": True, "data": []}
 
-    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_add_urls_open", fake_add)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_add_urls_open", fake_add, raising=False)
     asyncio.run(cloud115.add_offline_url("magnet:?xt=urn:btih:abc"))
     assert captured["payload"]["wp_path_id"] == "from-settings-cid"
 
@@ -74,7 +74,7 @@ def test_add_offline_url_no_dir_omits_param(monkeypatch):
         captured["payload"] = payload
         return {"state": True, "data": []}
 
-    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_add_urls_open", fake_add)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_add_urls_open", fake_add, raising=False)
     asyncio.run(cloud115.add_offline_url("magnet:?xt=urn:btih:abc"))
     assert "wp_path_id" not in captured["payload"]
 
