@@ -195,3 +195,4 @@ Win11 24H2 解析器 bug 卡了几个雷已记录，未完成。当前 testing �
 - **115 download URL 绑 UA** —— mp-relay 用 pinned Chrome UA 同时给 sign URL +
   HTTP GET，否则 403
 - **`:5000` 无鉴权** —— 不要暴露到公网，仅限可信内网
+- **`p115client` 0.0.9 改了 Open 离线接口名** —— `from_token` / `offline_*_open` 变成构造函数 + `clouddownload_*`。`app/cloud115.py` 两套都认；依赖锁在 `p115client>=0.0.8,<0.1`，避免再出现 0.0.8 → 0.0.9 那种 CI 被默默拉爆的情况。

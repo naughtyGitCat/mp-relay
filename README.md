@@ -232,3 +232,4 @@ Per-project notes live in [`docs/references.md`](docs/references.md).
 - **115 download URLs are bound to the UA** — mp-relay uses a pinned Chrome UA for both
   signing the URL and the HTTP GET, otherwise 403
 - **`:5000` has no auth** — don't expose it to the internet; trusted LAN only
+- **`p115client` 0.0.9 renamed the Open offline helpers** — `from_token` / `offline_*_open` became constructor + `clouddownload_*`. `app/cloud115.py` speaks both APIs; keep `p115client>=0.0.8,<0.1` so a later rename cannot silently break CI the way 0.0.8 → 0.0.9 did.

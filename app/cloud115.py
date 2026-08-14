@@ -208,11 +208,53 @@ async def poll_auth(uid: str, time_: Any, sign: str) -> dict:
 # Offline ops with auto token-refresh
 # ---------------------------------------------------------------------------
 
+# p115client 0.0.9 renamed the Open offline helpers and dropped
+# ``P115OpenClient.from_token``. Production still runs 0.0.8; CI/fresh
+# installs resolve to 0.0.9 because 0.0.8 is no longer on PyPI.
+_CLIENT_METHOD_ALIASES: dict[str, tuple[str, ...]] = {
+    "offline_add_urls_open": (
+        "offline_add_urls_open",
+        "clouddownload_task_add_urls",
+        "clouddownload_task_add_urls_open",
+    ),
+    "offline_quota_info_open": (
+        "offline_quota_info_open",
+        "clouddownload_quota_info",
+        "clouddownload_quota_info_open",
+    ),
+    "offline_list_open": (
+        "offline_list_open",
+        "clouddownload_task_list",
+        "clouddownload_task_list_open",
+    ),
+}
+
+
+def _make_client(access_token: str, refresh_token: str) -> P115OpenClient:
+    """Build a client from a stored token pair across p115client 0.0.8/0.0.9."""
+    factory = getattr(P115OpenClient, "from_token", None)
+    if callable(factory):
+        return factory(access_token, refresh_token)
+    return P115OpenClient(access_token, refresh_token)
+
+
+def _client_method(client: P115OpenClient, name: str) -> Any:
+    """Resolve an Open API method across p115client 0.0.8 and 0.0.9 names."""
+    candidates = _CLIENT_METHOD_ALIASES.get(name, (name,))
+    for candidate in candidates:
+        method = getattr(client, candidate, None)
+        if method is not None:
+            return method
+    raise AttributeError(
+        f"P115OpenClient has none of {candidates} (p115client API changed)"
+    )
+
+
 def _client() -> Optional[P115OpenClient]:
     tokens = load_tokens()
     if not tokens:
         return None
-    return P115OpenClient.from_token(*tokens)
+    return _make_client(*tokens)
 
 
 async def _refresh_now(client: P115OpenClient) -> P115OpenClient:
@@ -227,7 +269,7 @@ async def _refresh_now(client: P115OpenClient) -> P115OpenClient:
         raise RuntimeError(f"cloud115 token refresh failed: {resp}")
     save_tokens(at, new_rt, expires_in=int(td.get("expires_in") or 7200))
     log.info("cloud115 token refreshed")
-    return P115OpenClient.from_token(at, new_rt)
+    return _make_client(at, new_rt)
 
 
 # Token-expired hints from 115. They show up in two places:
@@ -269,7 +311,7 @@ async def _call(method_name: str, *args: Any, **kwargs: Any) -> dict:
     client = _client()
     if client is None:
         raise RuntimeError("115 未授权 — 请先访问 /auth/115 完成扫码授权")
-    method = getattr(client, method_name)
+    method = _client_method(client, method_name)
 
     refreshed = False
 
@@ -282,7 +324,7 @@ async def _call(method_name: str, *args: Any, **kwargs: Any) -> dict:
             raise
         log.info("cloud115 access_token expired via exception (%s), refreshing", msg[:80])
         client = await _refresh_now(client)
-        method = getattr(client, method_name)
+        method = _client_method(client, method_name)
         refreshed = True
         resp = await method(*args, async_=True, **kwargs)
 
@@ -293,7 +335,7 @@ async def _call(method_name: str, *args: Any, **kwargs: Any) -> dict:
             (resp.get("message") if isinstance(resp, dict) else "")[:80],
         )
         client = await _refresh_now(client)
-        method = getattr(client, method_name)
+        method = _client_method(client, method_name)
         resp = await method(*args, async_=True, **kwargs)
 
     return resp

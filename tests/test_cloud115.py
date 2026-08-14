@@ -187,6 +187,80 @@ def test_call_without_tokens_raises(monkeypatch):
         assert "未授权" in str(e)
 
 
+def test_client_method_resolves_legacy_and_renamed_helpers():
+    """p115client 0.0.9 renamed offline_*_open to clouddownload_*."""
+    from app.cloud115 import _client_method
+
+    class Legacy:
+        def offline_add_urls_open(self) -> str:
+            return "legacy"
+
+        def offline_quota_info_open(self) -> str:
+            return "legacy-quota"
+
+    class Renamed:
+        def clouddownload_task_add_urls(self) -> str:
+            return "new"
+
+        def clouddownload_quota_info(self) -> str:
+            return "new-quota"
+
+    assert _client_method(Legacy(), "offline_add_urls_open")() == "legacy"
+    assert _client_method(Renamed(), "offline_add_urls_open")() == "new"
+    assert _client_method(Legacy(), "offline_quota_info_open")() == "legacy-quota"
+    assert _client_method(Renamed(), "offline_quota_info_open")() == "new-quota"
+
+
+def test_make_client_uses_from_token_when_present(monkeypatch):
+    from app import cloud115
+
+    class Dummy:
+        @classmethod
+        def from_token(cls, access_token: str, refresh_token: str) -> "Dummy":
+            self = object.__new__(cls)
+            self.access_token = access_token
+            self.refresh_token = refresh_token
+            return self
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("constructor should not run when from_token exists")
+
+    monkeypatch.setattr(cloud115, "P115OpenClient", Dummy)
+    client = cloud115._make_client("at", "rt")
+    assert client.access_token == "at"
+    assert client.refresh_token == "rt"
+
+
+def test_make_client_falls_back_to_constructor(monkeypatch):
+    from app import cloud115
+
+    class Dummy:
+        def __init__(self, access_token: str, refresh_token: str) -> None:
+            self.access_token = access_token
+            self.refresh_token = refresh_token
+
+    monkeypatch.setattr(cloud115, "P115OpenClient", Dummy)
+    client = cloud115._make_client("at", "rt")
+    assert client.access_token == "at"
+    assert client.refresh_token == "rt"
+
+
+def test_installed_p115client_can_build_and_resolve_offline_helpers():
+    """Fail CI if a future p115client drop/rename breaks the aliases."""
+    from app.cloud115 import _client_method, _make_client
+
+    client = _make_client("at", "rt")
+    assert client.access_token == "at"
+    assert client.refresh_token == "rt"
+    for name in (
+        "offline_add_urls_open",
+        "offline_quota_info_open",
+        "offline_list_open",
+        "download_url_info_open",
+    ):
+        assert callable(_client_method(client, name)), name
+
+
 def test_add_offline_url_invokes_correct_endpoint(monkeypatch):
     _isolated_db(monkeypatch)
     from app import cloud115
@@ -201,6 +275,7 @@ def test_add_offline_url_invokes_correct_endpoint(monkeypatch):
     monkeypatch.setattr(
         "app.cloud115.P115OpenClient.offline_add_urls_open",
         fake_add,
+        raising=False,
     )
 
     out = asyncio.run(cloud115.add_offline_url("magnet:?xt=urn:btih:abc"))
@@ -226,7 +301,7 @@ def test_call_refreshes_on_token_expired(monkeypatch):
         call_count["refresh"] += 1
         return {"data": {"access_token": "new-at", "refresh_token": "new-rt", "expires_in": 7200}}
 
-    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_add_urls_open", fake_add)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_add_urls_open", fake_add, raising=False)
     monkeypatch.setattr("app.cloud115.P115OpenClient.login_refresh_token_open",
                         AsyncMock(side_effect=fake_refresh))
 
@@ -259,7 +334,7 @@ def test_call_refreshes_on_state_false_token_message(monkeypatch):
         call_count["refresh"] += 1
         return {"data": {"access_token": "new-at", "refresh_token": "new-rt"}}
 
-    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota, raising=False)
     monkeypatch.setattr("app.cloud115.P115OpenClient.login_refresh_token_open",
                         AsyncMock(side_effect=fake_refresh))
 
@@ -288,7 +363,7 @@ def test_call_does_not_loop_on_persistent_state_false(monkeypatch):
         call_count["refresh"] += 1
         return {"data": {"access_token": "new-at", "refresh_token": "new-rt"}}
 
-    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota, raising=False)
     monkeypatch.setattr("app.cloud115.P115OpenClient.login_refresh_token_open",
                         AsyncMock(side_effect=fake_refresh))
 
@@ -315,7 +390,7 @@ def test_call_does_not_refresh_on_unrelated_state_false(monkeypatch):
         call_count["refresh"] += 1
         return {"data": {"access_token": "x", "refresh_token": "y"}}
 
-    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota)
+    monkeypatch.setattr("app.cloud115.P115OpenClient.offline_quota_info_open", fake_quota, raising=False)
     monkeypatch.setattr("app.cloud115.P115OpenClient.login_refresh_token_open",
                         AsyncMock(side_effect=fake_refresh))
 
@@ -371,6 +446,7 @@ def test_healthcheck_authorized_calls_quota(monkeypatch):
     monkeypatch.setattr(
         "app.cloud115.P115OpenClient.offline_quota_info_open",
         fake_quota,
+        raising=False,
     )
 
     err = asyncio.run(cloud115.healthcheck())
@@ -402,6 +478,7 @@ def test_healthcheck_binary_oserror_does_not_leak_full_blob(monkeypatch):
     monkeypatch.setattr(
         "app.cloud115.P115OpenClient.offline_quota_info_open",
         fake_quota,
+        raising=False,
     )
 
     err = asyncio.run(cloud115.healthcheck())
@@ -436,6 +513,7 @@ def test_healthcheck_truncates_long_quota_rejection(monkeypatch):
     monkeypatch.setattr(
         "app.cloud115.P115OpenClient.offline_quota_info_open",
         fake_quota,
+        raising=False,
     )
 
     err = asyncio.run(cloud115.healthcheck())
